@@ -152,6 +152,10 @@ beforeAll(async () => {
         // 模拟部分模型把 LaTeX 反斜杠只写一层，导致 JSON 转义非法。
         content = content.replace(/\\\\/g, '\\')
       }
+      if (prompt.includes('NUMERIC_ITEMS') && !prompt.includes('上一次输出未通过校验')) {
+        // 模拟模型把 items 写成一串数字，触发一次带错误说明的重试。
+        content = JSON.stringify({ items: items.map((_, index) => index + 1) })
+      }
       response.writeHead(200, { 'Content-Type': 'application/json' })
       response.end(
         JSON.stringify({
@@ -310,6 +314,40 @@ describe('generation pipeline', () => {
     )
     expect(stems.some((stem) => stem.includes('\\triangle'))).toBe(true)
     expect(stems.every((stem) => !stem.includes('\t'))).toBe(true)
+  })
+
+  it('retries with a readable message when items contain numbers', async () => {
+    const config: ExamConfig = {
+      grade: 7,
+      edition: 'renjiao',
+      chapterIds: ['renjiao-7-a-1', 'renjiao-7-a-2'],
+      pageCount: 2,
+      difficulty: 6,
+      typeCount: 2,
+      types: ['single_choice', 'fill_blank'],
+      manualCounts: {},
+      totalScore: 100,
+      durationMinutes: 90,
+      title: '数字 items 修复测试',
+      exportFormats: ['pdf'],
+      notes: 'NUMERIC_ITEMS',
+      avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test',
+      name: 'Mock',
+      baseUrl,
+      model: 'mock-model',
+      authMode: 'user-key',
+      timeoutMs: 30_000,
+      concurrency: 2,
+      reasoningEffort: 'medium',
+      answerReview: false
+    }
+    const paper = await generatePaper(config, { profile, apiKey: '' })
+    const questions = paper.sections.flatMap((section) => section.questions)
+    expect(questions.length).toBeGreaterThan(0)
+    expect(questions.every((question) => typeof question.stem === 'string')).toBe(true)
   })
 })
 

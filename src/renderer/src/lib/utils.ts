@@ -156,10 +156,11 @@ export function explainGenerationFailure(error: unknown): GenerationFailure {
       raw
     }
   }
-  if (/JSON|题目数量|校验|公式|重复题|字段/i.test(raw)) {
+  if (/JSON|题目数量|题目结构|题目对象|校验|公式|重复题|字段|应为/i.test(raw)) {
     return {
       title: '生成内容未通过校验',
-      message: 'AI 返回的题目结构不完整。可以直接重试，或换一个兼容性更好的模型。',
+      message:
+        'AI 返回的题目结构不完整。系统已自动重试一次；仍失败时可直接再点重新生成，或换一个兼容性更好的模型。',
       raw
     }
   }

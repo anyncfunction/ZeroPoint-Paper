@@ -98,13 +98,126 @@ function validateFigure(item: z.infer<typeof RawItemSchema>): void {
 
 export { normalizeStem }
 
+const TYPE_LABELS: Record<string, string> = {
+  number: '数字',
+  string: '字符串',
+  boolean: '布尔值',
+  array: '数组',
+  object: '对象',
+  null: 'null',
+  undefined: '空值'
+}
+
+const FIELD_LABELS: Record<string, string> = {
+  slot: 'slot',
+  chapterId: '章节 ID',
+  knowledgePoint: '知识点',
+  difficulty: '难度',
+  stem: '题干',
+  options: '选项',
+  answer: '答案',
+  explanation: '解析',
+  figure: '配图'
+}
+
+// Zod 的 invalid_type 里 received 是类型名（number/string），不是实际值。
+function receivedLabel(value: unknown): string {
+  const type = String(value)
+  return TYPE_LABELS[type] ?? type
+}
+
+// Zod 默认把问题列表序列化成 JSON，直接抛给用户既难读也看不出该改哪道题。
+function describeIssues(error: z.ZodError): string {
+  const parts = error.issues.slice(0, 4).map((issue) => {
+    const [root, index, field] = issue.path
+    const position =
+      (root === 'items' || root === 'questions') && typeof index === 'number'
+        ? `第 ${index + 1} 题`
+        : ''
+    const fieldLabel = typeof field === 'string' ? FIELD_LABELS[field] ?? field : ''
+    if (issue.code === 'invalid_type') {
+      if (position && !fieldLabel) {
+        return `${position}应为题目对象，实际是${receivedLabel((issue as { received?: unknown }).received)}`
+      }
+      const target = [position, fieldLabel].filter(Boolean).join('的')
+      return `${target || '字段'}应为${TYPE_LABELS[issue.expected] ?? issue.expected}`
+    }
+    if (issue.code === 'too_small' && fieldLabel) {
+      return `${[position, fieldLabel].filter(Boolean).join('的')}不能为空`
+    }
+    return [position, fieldLabel, issue.message].filter(Boolean).join('：')
+  })
+  const detail = parts.join('；')
+  const more = error.issues.length > parts.length ? ` 等 ${error.issues.length} 处问题` : ''
+  return `AI 返回的题目结构不正确：${detail}${more}`
+}
+
+// 模型偶尔把题目包在对象映射、嵌套字段或字符串里，先还原成数组再校验。
+function toItemArray(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value
+  if (!value || typeof value !== 'object') return null
+  const entries = Object.entries(value as Record<string, unknown>)
+  if (entries.length === 0) return null
+  if (entries.every(([, item]) => item && typeof item === 'object' && !Array.isArray(item))) {
+    return entries
+      .sort(([left], [right]) => Number(left) - Number(right))
+      .map(([, item]) => item)
+  }
+  return null
+}
+
+function coerceItem(item: unknown): unknown {
+  if (typeof item !== 'string') return item
+  const trimmed = item.trim()
+  if (!trimmed.startsWith('{')) return item
+  try {
+    return JSON.parse(trimmed)
+  } catch {
+    return item
+  }
+}
+
+function normalizeItemsPayload(raw: unknown): unknown {
+  if (Array.isArray(raw)) return { items: raw.map(coerceItem) }
+  if (!raw || typeof raw !== 'object') return raw
+  const record = raw as Record<string, unknown>
+  const candidates = (['items', 'questions'] as const).map((key) => ({
+    key,
+    items: toItemArray(record[key])
+  }))
+  // 同一份输出里既有数字 items 又有真正的题目数组时，优先使用后者。
+  const usable = candidates.find(
+    (candidate) =>
+      candidate.items &&
+      candidate.items.some((item) => item && typeof item === 'object' && !Array.isArray(item))
+  )
+  if (usable?.items) {
+    return { [usable.key]: usable.items.map(coerceItem) }
+  }
+  for (const candidate of candidates) {
+    if (candidate.items) {
+      return { [candidate.key]: candidate.items.map(coerceItem) }
+    }
+  }
+  for (const key of ['data', 'result', 'list'] as const) {
+    const items = toItemArray(record[key])
+    if (items) return { items: items.map(coerceItem) }
+  }
+  return raw
+}
+
 export function rawItems(
   raw: unknown,
   expectedCount: number,
   type: QuestionType,
   chapters: Chapter[]
 ): Array<z.infer<typeof RawItemSchema>> {
-  const parsed = RawItemsSchema.parse(raw)
+  const normalized = normalizeItemsPayload(raw)
+  const result = RawItemsSchema.safeParse(normalized)
+  if (!result.success) {
+    throw new Error(describeIssues(result.error))
+  }
+  const parsed = result.data
   const items = parsed.items ?? parsed.questions ?? []
   if (items.length !== expectedCount) {
     throw new Error(`题目数量应为 ${expectedCount}，实际为 ${items.length}`)

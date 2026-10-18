@@ -207,7 +207,10 @@ ${errors}
 上一次输出：
 ${raw.slice(0, 12_000)}
 
-请修正并重新输出完整 JSON，不要解释。`
+请修正并重新输出完整 JSON，不要解释。
+注意：最外层必须是 {"items":[ ... ]}，items 的每个元素都必须是完整题目对象，
+包含 slot、chapterId、knowledgePoint、difficulty、stem、options、answer、explanation；
+不能是数字、字符串、数组或 null。单选题的 options 必须是 4 个 {key,text} 对象。`
 }
 
 export function questionRegeneratePrompt(
