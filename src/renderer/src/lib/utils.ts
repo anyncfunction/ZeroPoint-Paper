@@ -160,7 +160,7 @@ export function explainGenerationFailure(error: unknown): GenerationFailure {
     return {
       title: '模型没有输出题目',
       message:
-        '当前模型把推理过程当成了正文，没有输出题目 JSON。可以重试一次；若反复出现，请换用非思考型模型，或把思考强度调低。',
+        '模型未返回最终题目，系统调整输出方式后仍未成功。已完成的题组会保留，可重试继续；若反复出现，请先测试接口连接或更换模型。',
       raw
     }
   }

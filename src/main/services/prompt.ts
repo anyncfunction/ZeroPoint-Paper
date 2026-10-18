@@ -121,11 +121,12 @@ ${thinkingGuide}
 JSON 字符串中的 LaTeX 反斜杠必须双写：triangle、frac、sqrt、leq 等命令前要用两个反斜杠，不能只写一个；字符串内不要出现裸换行。
 
 【输出结构硬性要求】
-- 顶层只能是一个 JSON 对象，形如 {"items":[...]}。
-- items 必须是数组，数组里每个元素都必须是完整的题目对象 { }。
+- 顶层只能是一个 JSON 对象，字段严格遵循当前任务指定的返回结构。
+- 批量命题使用 {"items":[...]}，items 的每个元素必须是完整的题目对象 { }。
 - 禁止把 items 写成题号数组，例如 {"items":[1,2,3,4]} 是严重错误。
-- 禁止把 items 写成字符串、数字、数组或 null。
-- 每道题必须同时包含 slot、chapterId、knowledgePoint、difficulty、stem、options、answer、explanation 八个字段。
+- items 的元素禁止使用字符串、数字、数组或 null。
+- 批量命题的每道题必须同时包含 slot、chapterId、knowledgePoint、difficulty、stem、options、answer、explanation 八个字段。
+- 单题重新命制按任务要求返回单个题目对象；难度拔高和答案审校分别按任务要求返回 upgrades 或 corrections 修改数组，允许只返回修改字段。不要套用批量命题结构。
 
 【禁止输出思考过程】
 - 回复的第一个字符必须是 {，最后一个字符必须是 }。
@@ -311,7 +312,8 @@ ${oldQuestion.stem}
 ${figureGuideFor(chapter ? [chapter] : [], expectedType)}
 
 返回与以下结构相同的单个 JSON 对象，不要数组、不要解释：
-{"chapterId":"${chapterId}","knowledgePoint":"知识点","difficulty":${difficulty},"stem":"题干","options":[],"answer":"答案","explanation":"解析"}
+{"chapterId":"${chapterId}","knowledgePoint":"知识点","difficulty":${difficulty},"stem":"题干","options":${expectedType === 'single_choice' ? '[{"key":"A","text":"选项A"},{"key":"B","text":"选项B"},{"key":"C","text":"选项C"},{"key":"D","text":"选项D"}]' : '[]'},"answer":"${expectedType === 'single_choice' ? '正确选项字母' : '答案'}","explanation":"解析"}
+${expectedType === 'single_choice' ? '单选题必须有且仅有 A、B、C、D 四个选项，answer 只填一个正确选项字母。' : 'options 必须为空数组。'}
 `
 }
 

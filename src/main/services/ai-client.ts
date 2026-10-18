@@ -10,15 +10,50 @@ export interface AiClientOptions {
   apiKey: string
   signal?: AbortSignal
   maxTokens?: number
+  thinkingMode?: 'enabled' | 'disabled'
   onUsage?: (usage: TokenUsage) => void
   onFinishReason?: (reason: string) => void
+}
+
+export class AiOutputError extends Error {
+  constructor(
+    readonly problem: 'reasoning_only' | 'empty_content',
+    readonly finishReason = ''
+  ) {
+    super(
+      problem === 'reasoning_only'
+        ? '模型只返回了思考过程，没有输出题目 JSON'
+        : 'AI 接口未返回内容'
+    )
+    this.name = 'AiOutputError'
+  }
+}
+
+export function supportsThinkingControl(profile: ProviderProfile): boolean {
+  return /(?:^|\/)deepseek-(?:flash|pro|v4-(?:flash|pro))$/i.test(profile.model.trim())
+}
+
+function completionParameters(options: AiClientOptions): Record<string, unknown> {
+  if (!supportsThinkingControl(options.profile)) {
+    return options.maxTokens ? { max_tokens: options.maxTokens } : {}
+  }
+  const enabled = options.thinkingMode !== 'disabled'
+  // DeepSeek maps medium to high. Its token limit includes thinking and final output.
+  const reserve = { low: 4096, medium: 8192, high: 12288 }[options.profile.reasoningEffort]
+  return {
+    thinking: { type: enabled ? 'enabled' : 'disabled' },
+    ...(enabled ? { reasoning_effort: options.profile.reasoningEffort === 'low' ? 'low' : 'high' } : {}),
+    ...(options.maxTokens
+      ? { max_tokens: Math.min(32_000, options.maxTokens + (enabled ? reserve : 0)) }
+      : {})
+  }
 }
 
 interface ChatCompletionResponse {
   choices?: Array<{
     finish_reason?: string | null
     message?: {
-      content?: string | Array<{ type?: string; text?: string }>
+      content?: string | Array<{ type?: string; text?: string }> | null
       reasoning_content?: string
     }
   }>
@@ -40,6 +75,7 @@ function endpoint(baseUrl: string): string {
 type MessageContent =
   | string
   | Array<{ type?: string; text?: string }>
+  | null
   | undefined
 
 function contentText(content: MessageContent): string {
@@ -102,12 +138,16 @@ async function requestCompletion(
           { role: 'user', content: user }
         ],
         temperature: 0.55,
-        ...(options.maxTokens ? { max_tokens: options.maxTokens } : {}),
+        ...completionParameters(options),
         ...(jsonMode ? { response_format: { type: 'json_object' } } : {})
       }),
       signal: combineSignals(options.profile.timeoutMs, options.signal)
     })
   } catch (error) {
+    if (options.signal?.aborted) throw new DOMException('已取消生成', 'AbortError')
+    if ((error as Error).name === 'TimeoutError' || (error as Error).name === 'AbortError') {
+      throw new Error('AI 请求超时，请稍后重试或在 AI 设置中增加超时时间', { cause: error })
+    }
     const cause = (error as Error & { cause?: Error & { code?: string } }).cause
     const detail = cause?.code
       ? `${cause.code}: ${cause.message}`
@@ -127,12 +167,13 @@ async function requestCompletion(
 
   const data = (await response.json()) as ChatCompletionResponse
   if (data.error?.message) throw new Error(`AI 接口错误：${data.error.message}`)
+  const message = data.choices?.[0]?.message
   const promptTokens =
     data.usage?.prompt_tokens ??
     Math.ceil((system.length + user.length) / 3.2)
   const completionTokens =
     data.usage?.completion_tokens ??
-    Math.ceil(contentText(data.choices?.[0]?.message?.content).length / 3.2)
+    Math.ceil((contentText(message?.content).length + (message?.reasoning_content?.length ?? 0)) / 3.2)
   options.onUsage?.({
     promptTokens,
     completionTokens,
@@ -140,25 +181,17 @@ async function requestCompletion(
       data.usage?.total_tokens ?? promptTokens + completionTokens,
     requests: 1
   })
-  const message = data.choices?.[0]?.message
   const answer = contentText(message?.content)
-  const reasoning = message?.reasoning_content ?? ''
-  // 思考型模型常把正文留空、只给 reasoning_content。它不一定是题目 JSON，
-  // 直接当答案会得到一段散文，所以只在里面确实含 JSON 时才采用。
-  const content = answer.trim()
-    ? answer
-    : reasoning.includes('{')
-      ? reasoning
-      : ''
-  options.onFinishReason?.(data.choices?.[0]?.finish_reason ?? '')
-  if (!content.trim()) {
-    throw new Error(
-      reasoning.trim()
-        ? '模型只返回了思考过程，没有输出题目 JSON'
-        : 'AI 接口未返回内容'
+  const finishReason = data.choices?.[0]?.finish_reason ?? ''
+  options.onFinishReason?.(finishReason)
+  // Reasoning may contain draft JSON; only message.content is a final answer.
+  if (!answer.trim()) {
+    throw new AiOutputError(
+      message?.reasoning_content?.trim() ? 'reasoning_only' : 'empty_content',
+      finishReason
     )
   }
-  return content
+  return answer
 }
 
 export async function completeJson(
@@ -172,6 +205,8 @@ export async function completeJson(
     try {
       return await requestCompletion(options, system, user, jsonMode)
     } catch (error) {
+      if (error instanceof AiOutputError) throw error
+      if (options.signal?.aborted) throw new DOMException('已取消生成', 'AbortError')
       if ((error as Error).name === 'AbortError') throw error
       const status = (error as Error & { status?: number }).status
       if (jsonMode && (status === 400 || status === 404 || status === 422)) {
@@ -184,6 +219,7 @@ export async function completeJson(
         await delay(700 * 2 ** (attempt - 1), options.signal)
         continue
       }
+      if (status) throw error
       attempt += 1
       if (attempt >= 2) throw error
     }
@@ -198,7 +234,7 @@ export function parseJsonResponse(raw: string): unknown {
   if (starts.length === 0) {
     const head = text.replace(/\s+/g, ' ').slice(0, 120)
     if (THINKING_PROSE.test(text)) {
-      throw new Error(`模型只输出了思考过程，没有输出题目 JSON（开头：${head}）`)
+      throw new AiOutputError('reasoning_only')
     }
     throw new Error(`AI 返回内容不是 JSON${head ? `（开头：${head}）` : ''}`)
   }
@@ -500,7 +536,11 @@ export async function testConnection(
   const started = Date.now()
   try {
     const response = await requestCompletion(
-      { profile: { ...profile, timeoutMs: 30_000 }, apiKey },
+      {
+        profile: { ...profile, timeoutMs: 30_000 },
+        apiKey,
+        ...(supportsThinkingControl(profile) ? { thinkingMode: 'disabled' as const, maxTokens: 32 } : {})
+      },
       '你是连接测试助手。',
       '只回复 OK',
       false

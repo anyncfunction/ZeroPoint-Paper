@@ -31,5 +31,13 @@ describe('generation error explanation', () => {
     )
     expect(failure.title).toBe('AI 接口拒绝连接')
   })
+
+  it('explains exhausted thinking recovery without claiming no retry happened', () => {
+    const failure = explainGenerationFailure(
+      new Error('单选题生成失败：模型只返回了思考过程，没有输出题目 JSON')
+    )
+    expect(failure.title).toBe('模型没有输出题目')
+    expect(failure.message).toContain('调整输出方式')
+  })
 })
 

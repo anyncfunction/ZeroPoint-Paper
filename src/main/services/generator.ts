@@ -12,7 +12,12 @@ import {
 } from '../../shared/schemas'
 import { isNearDuplicate } from '../../shared/fingerprint'
 import { getSelectedChapters } from '../../shared/curriculum'
-import { completeJson, parseJsonResponse } from './ai-client'
+import {
+  AiOutputError,
+  completeJson,
+  parseJsonResponse,
+  supportsThinkingControl
+} from './ai-client'
 import {
   allocateQuestionScores,
   createExamPlan,
@@ -129,45 +134,68 @@ interface RepairRequest<T> {
   skipRepairFor?: (error: Error) => boolean
 }
 
-// 三段请求共用同一套「请求 → 解析 → 带错误重试一次」流程，差异只由调用方注入。
+// Recovery is scoped to one task and provider/model; never changes saved settings.
+const thinkingRecovery = new WeakMap<GenerateOptions, Set<string>>()
+
+// Requests and parsing share the same bounded repair loop.
 async function requestWithRepair<T>(spec: RepairRequest<T>): Promise<T> {
   throwIfAborted(spec.options.signal)
-  let finishReason = ''
-  const send = async (prompt: string, maxTokens: number): Promise<string> => {
-    finishReason = ''
-    return completeJson(
-      {
-        profile: spec.profile,
-        apiKey: spec.options.apiKey,
-        signal: spec.options.signal,
-        maxTokens,
-        onUsage: spec.options.onUsage,
-        onFinishReason: (reason) => {
-          finishReason = reason
-        }
-      },
-      spec.system,
-      prompt
-    )
+  let prompt = spec.prompt
+  let maxTokens = spec.maxTokens
+  let recoveredModels = thinkingRecovery.get(spec.options)
+  if (!recoveredModels) {
+    recoveredModels = new Set<string>()
+    thinkingRecovery.set(spec.options, recoveredModels)
   }
-
-  let rawText = await send(spec.prompt, spec.maxTokens)
+  const modelKey = JSON.stringify([spec.profile.baseUrl, spec.profile.model])
+  let thinkingMode: 'disabled' | undefined = recoveredModels.has(modelKey) ? 'disabled' : undefined
   let lastError = new Error('AI 未返回可用的题目内容')
   const attempts = Math.max(1, spec.attempts ?? 2)
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    let rawText = ''
+    let finishReason = ''
+    let receivedContent = false
     try {
+      rawText = await completeJson(
+        {
+          profile: spec.profile,
+          apiKey: spec.options.apiKey,
+          signal: spec.options.signal,
+          maxTokens,
+          thinkingMode,
+          onUsage: spec.options.onUsage,
+          onFinishReason: (reason) => {
+            finishReason = reason
+          }
+        },
+        spec.system,
+        prompt
+      )
+      receivedContent = true
       return spec.parse(parseJsonResponse(rawText))
     } catch (error) {
+      throwIfAborted(spec.options.signal)
+      if ((error as Error).name === 'AbortError') throw error
       lastError = error as Error
+      // Transport/authentication errors have their own retry policy in the client.
+      if (!receivedContent && !(error instanceof AiOutputError)) break
       if (attempt < attempts - 1) {
         const truncated = finishReason === 'length'
         if (!truncated && spec.skipRepairFor?.(lastError)) break
-        throwIfAborted(spec.options.signal)
+        if ((error instanceof AiOutputError || truncated) && supportsThinkingControl(spec.profile)) {
+          thinkingMode = 'disabled'
+          recoveredModels.add(modelKey)
+        }
+        spec.options.onProgress?.({
+          stage: 'generating',
+          message: `模型未返回可用题目，正在调整输出方式重试（${attempt + 1}/${attempts - 1}）`
+        })
         const next = spec.repair(rawText, lastError.message, {
           truncated,
           retryIndex: attempt
         })
-        rawText = await send(next.prompt, next.maxTokens)
+        prompt = next.prompt
+        maxTokens = next.maxTokens
       }
     }
   }
@@ -244,7 +272,9 @@ async function generateSectionPerQuestion(
         repair: (rawText, error, { truncated, retryIndex }) => ({
           prompt:
             retryIndex >= 1
-              ? `只输出一个 JSON 对象，不要任何文字、分析或思考过程。
+              ? `${basePrompt}
+
+只输出一个 JSON 对象，不要任何文字、分析或思考过程。
 格式必须严格如下，items 中恰好 1 个完整题目对象：
 {"items":[{"slot":${index + 1},"chapterId":"${chapterId}","knowledgePoint":"知识点","difficulty":${difficulty},"stem":"题干","options":${section.type === 'single_choice' ? '[{"key":"A","text":"..."},{"key":"B","text":"..."},{"key":"C","text":"..."},{"key":"D","text":"..."}]' : '[]'},"answer":"${section.type === 'single_choice' ? 'A' : '答案'}","explanation":"解析"}]}
 第一个字符必须是 {。`
@@ -638,31 +668,37 @@ export async function generateSingleQuestion(
   const question = section?.questions[questionIndex]
   if (!section || !question) throw new Error('找不到需要重新生成的题目')
 
-  let rawText = await completeJson(
-    {
-      profile:
-        paper.config.difficulty >= 9
-          ? { ...profile, timeoutMs: Math.max(profile.timeoutMs, 180_000) }
-          : profile,
-      apiKey,
-      signal,
-      maxTokens: 1800,
-      onUsage
-    },
-    systemPrompt(profile.reasoningEffort),
-    questionRegeneratePrompt(
-      paper.config,
-      question.type,
-      question.difficulty,
-      question.chapterId,
-      question
-    )
+  const effectiveProfile = paper.config.difficulty >= 9
+    ? { ...profile, timeoutMs: Math.max(profile.timeoutMs, 180_000) }
+    : profile
+  const prompt = questionRegeneratePrompt(
+    paper.config,
+    question.type,
+    question.difficulty,
+    question.chapterId,
+    question
   )
+  const maxTokens = maxTokensFor(question.type, 1, question.difficulty)
+  let validationAttempt = 0
+  return requestWithRepair({
+    options: { profile: effectiveProfile, apiKey, signal, onUsage },
+    profile: effectiveProfile,
+    system: systemPrompt(profile.reasoningEffort),
+    prompt,
+    maxTokens,
+    attempts: 3,
+    repair: (rawText, error, { truncated }) => ({
+      prompt: `${prompt}
 
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
+上次输出无效：${error}
+上次输出：${rawText.slice(0, 5000)}
+请保留原章节、题型和难度，直接输出完整 JSON。`,
+      maxTokens: truncated ? 16_000 : Math.min(16_000, Math.round(maxTokens * 1.5))
+    }),
+    parse: (value) => {
+      validationAttempt += 1
       const replacement = validateRegeneratedQuestion(
-        parseJsonResponse(rawText),
+        value,
         question,
         question.chapterId,
         () => randomUUID()
@@ -678,38 +714,12 @@ export async function generateSingleQuestion(
         throw new Error('新题与现有或历史题目重复')
       }
       if (isNearDuplicate(replacement.stem, forbiddenCorpus)) {
-        if (attempt < 2) throw new Error('新题与历史题目高度相似，请换一个情境和数据')
+        if (validationAttempt < 3) throw new Error('新题与历史题目高度相似，请换一个情境和数据')
       }
       return replacement
-    } catch (error) {
-      if (attempt === 2) throw error
-      rawText = await completeJson(
-        {
-          profile:
-            paper.config.difficulty >= 9
-              ? { ...profile, timeoutMs: Math.max(profile.timeoutMs, 180_000) }
-              : profile,
-          apiKey,
-          signal,
-          maxTokens: 1800,
-          onUsage
-        },
-        systemPrompt(profile.reasoningEffort),
-        `${questionRegeneratePrompt(
-          paper.config,
-          question.type,
-          question.difficulty,
-          question.chapterId,
-          question
-        )}
-
-上次输出无效：${(error as Error).message}
-上次输出：${rawText.slice(0, 5000)}
-请重新输出完整 JSON。`
-      )
-    }
-  }
-  throw new Error('单题重新生成失败')
+    },
+    failureMessage: (error) => `单题重新生成失败：${error}`
+  })
 }
 
 export interface HardenScope {

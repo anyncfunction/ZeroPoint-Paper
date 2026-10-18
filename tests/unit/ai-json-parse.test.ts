@@ -34,7 +34,7 @@ describe('AI JSON parsing', () => {
 
   it('names thinking prose as a thinking-only response', () => {
     const raw = '我们需要输出合法JSON。需要设计题目。不能包含解释外内容。'
-    expect(() => parseJsonResponse(raw)).toThrow(/只输出了思考过程/)
+    expect(() => parseJsonResponse(raw)).toThrow(/只返回了思考过程/)
   })
 
   it('repairs single-backslash LaTeX commands inside strings', () => {

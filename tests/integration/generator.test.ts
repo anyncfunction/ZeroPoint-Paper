@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { generatePaper } from '../../src/main/services/generator'
+import { generatePaper, generateSingleQuestion } from '../../src/main/services/generator'
 import type {
   ExamConfig,
   ProviderProfile
@@ -8,6 +8,7 @@ import type {
 
 let server: Server
 let baseUrl = ''
+const requests: Array<Record<string, unknown>> = []
 
 function typeFromPrompt(prompt: string): string {
   if (prompt.includes('题型：single_choice') || prompt.includes('题型：单选题')) return 'single_choice'
@@ -143,7 +144,10 @@ beforeAll(async () => {
       const parsed = JSON.parse(body) as {
         messages: Array<{ content: string }>
         max_tokens?: number
+        model?: string
+        thinking?: { type: string }
       }
+      requests.push(parsed)
       const prompt = parsed.messages[1].content
       const maxTokens = parsed.max_tokens ?? 0
       const items = mockItems(prompt)
@@ -172,6 +176,17 @@ beforeAll(async () => {
         content = `结果为 $\\frac{a+b+c}{|abc|}$ 的值为 3。\n${content}`
       }
       let finishReason = 'stop'
+      let reasoningContent: string | undefined
+      if (parsed.model === 'deepseek-flash' && parsed.thinking?.type !== 'disabled') {
+        // Real API shape: final content is null, reasoning contains draft JSON.
+        reasoningContent = '先检查条件，草稿：{"items":[1,2]}，还需要继续推理。'
+        content = ''
+        finishReason = 'length'
+      }
+      if (prompt.includes('EMPTY_ONCE') && !prompt.includes('上一次输出未通过校验')) {
+        content = ''
+      }
+      if (prompt.includes('EMPTY_ALWAYS')) content = ''
       if (prompt.includes('THINKING_PROSE') && maxTokens < 9000) {
         // 模拟思考型模型把预算耗在散文上，输出被长度截断。
         content = '我们需要输出合法JSON。需要设计题目。不能包含解释外内容。要严格JSON。需要原创'
@@ -188,7 +203,8 @@ beforeAll(async () => {
             {
               finish_reason: finishReason,
               message: {
-                content
+                content: content || null,
+                reasoning_content: reasoningContent
               }
             }
           ]
@@ -518,6 +534,78 @@ describe('generation pipeline', () => {
     expect(questions.length).toBeGreaterThan(0)
     expect(questions.every((question) => question.stem.length > 2)).toBe(true)
     expect(questions.every((question) => question.answer.length > 0)).toBe(true)
+  })
+
+  it('recovers from reasoning-only responses in generation, hardening, review and regeneration', async () => {
+    const config: ExamConfig = {
+      grade: 7,
+      edition: 'renjiao',
+      chapterIds: ['renjiao-7-a-1'],
+      pageCount: 2,
+      difficulty: 10,
+      typeCount: 1,
+      types: ['single_choice'],
+      manualCounts: { single_choice: 2 },
+      totalScore: 100,
+      durationMinutes: 90,
+      title: '真实思考字段回归',
+      exportFormats: ['pdf'],
+      notes: '保持中考压轴要求',
+      avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test', name: 'DeepSeek', baseUrl, model: 'deepseek-flash',
+      authMode: 'user-key', timeoutMs: 30_000, concurrency: 1,
+      reasoningEffort: 'medium', answerReview: true
+    }
+    const start = requests.length
+    const usage: number[] = []
+    const progress: string[] = []
+    const paper = await generatePaper(config, {
+      profile, apiKey: '', onUsage: (next) => usage.push(next.requests),
+      onProgress: (next) => progress.push(next.message)
+    })
+    expect(paper.sections[0].questions).toHaveLength(2)
+    expect(paper.sections[0].questions.every((question) => question.difficulty >= 9)).toBe(true)
+    expect(progress.filter((message) => message.includes('调整输出方式重试'))).toHaveLength(1)
+    const replacement = await generateSingleQuestion(paper, 0, 0, profile, '')
+    expect(replacement.answer).toBe('C')
+    const sent = requests.slice(start)
+    expect(sent).toHaveLength(6)
+    expect(usage).toHaveLength(4)
+    expect(sent[0].thinking).toEqual({ type: 'enabled' })
+    expect(sent.slice(1, 4).every((request) => (request.thinking as { type: string }).type === 'disabled')).toBe(true)
+    // Regeneration starts a fresh task; saved thinking settings still apply.
+    expect(sent[4].thinking).toEqual({ type: 'enabled' })
+    expect(sent[5].thinking).toEqual({ type: 'disabled' })
+    expect(profile.reasoningEffort).toBe('medium')
+    const retry = sent[1].messages as Array<{ content: string }>
+    expect(retry[1].content).toContain('整体难度：10/10')
+    expect(retry[1].content).toContain('保持中考压轴要求')
+    expect(retry[1].content).not.toContain('草稿：')
+  })
+
+  it('repairs an empty response thrown by the client', async () => {
+    const config: ExamConfig = {
+      grade: 7, edition: 'renjiao', chapterIds: ['renjiao-7-a-1'],
+      pageCount: 2, difficulty: 6, typeCount: 1, types: ['single_choice'],
+      manualCounts: { single_choice: 2 }, totalScore: 100, durationMinutes: 90,
+      title: '空正文重试', exportFormats: ['pdf'], notes: 'EMPTY_ONCE',
+      avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test', name: 'Mock', baseUrl, model: 'mock-model',
+      authMode: 'user-key', timeoutMs: 30_000, concurrency: 1,
+      reasoningEffort: 'medium', answerReview: false
+    }
+    const start = requests.length
+    expect((await generatePaper(config, { profile, apiKey: '' })).sections[0].questions).toHaveLength(2)
+    expect(requests.length - start).toBe(2)
+
+    const failedStart = requests.length
+    await expect(generatePaper({ ...config, notes: 'EMPTY_ALWAYS' }, { profile, apiKey: '' }))
+      .rejects.toThrow('单选题生成失败：AI 接口未返回内容')
+    expect(requests.length - failedStart).toBe(2)
   })
 })
 
