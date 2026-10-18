@@ -71,6 +71,17 @@ describe('item payload normalization', () => {
     expect(items).toHaveLength(1)
   })
 
+  it('classifies a wrong item count', () => {
+    try {
+      parse({ items: [item(0)] }, 2)
+      throw new Error('should have thrown')
+    } catch (error) {
+      expect(isItemPayloadError(error)).toBe(true)
+      expect((error as ItemPayloadError).problem).toBe('count_mismatch')
+      expect((error as Error).message).toMatch(/题目数量应为 2，实际为 1/)
+    }
+  })
+
   it('accepts a root array of items', () => {
     const items = parse([item(0), item(1)])
     expect(items).toHaveLength(2)

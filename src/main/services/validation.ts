@@ -103,6 +103,8 @@ export type ItemPayloadProblem =
   | 'slot_numbers'
   /** 模型返回了数字/字符串等非对象元素 */
   | 'primitive_items'
+  /** 题目数量与要求不一致 */
+  | 'count_mismatch'
 
 export class ItemPayloadError extends Error {
   constructor(
@@ -274,7 +276,10 @@ export function rawItems(
   const parsed = result.data
   const items = parsed.items ?? parsed.questions ?? []
   if (items.length !== expectedCount) {
-    throw new Error(`题目数量应为 ${expectedCount}，实际为 ${items.length}`)
+    throw new ItemPayloadError(
+      `题目数量应为 ${expectedCount}，实际为 ${items.length}`,
+      'count_mismatch'
+    )
   }
   const chapterIds = new Set(chapters.map((chapter) => chapter.id))
 

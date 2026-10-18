@@ -168,7 +168,8 @@ async function requestSection(
       }),
       parse: (value) => rawItems(value, section.questionCount, section.type, chapters),
       failureMessage: (error) => `${section.title}生成失败：${error}`,
-      skipRepairFor: isItemPayloadError
+      skipRepairFor: (error) =>
+        isItemPayloadError(error) && error.problem !== 'count_mismatch'
     })
     return { parsed }
   } catch (error) {
