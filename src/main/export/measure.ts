@@ -1,5 +1,4 @@
 import { promises as fs } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { BrowserWindow } from 'electron'
 import type { Paper } from '../../shared/schemas'
@@ -9,6 +8,7 @@ import {
   type PageBlock
 } from '../../shared/pagination'
 import { buildMeasurementHtml } from './html'
+import { createTempDirectory } from './temp'
 
 const BUFFER_PX = 12
 
@@ -20,7 +20,7 @@ export interface MeasuredLayout {
 
 export async function measurePaperPages(paper: Paper): Promise<MeasuredLayout> {
   const html = await buildMeasurementHtml(paper)
-  const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'lingdian-measure-'))
+  const tempDirectory = await createTempDirectory('lingdian-measure-')
   const htmlPath = path.join(tempDirectory, 'measure.html')
   await fs.writeFile(htmlPath, html, 'utf8')
   const window = new BrowserWindow({

@@ -1,14 +1,14 @@
 import { promises as fs } from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { BrowserWindow } from 'electron'
 import { PDFDocument } from 'pdf-lib'
 import type { Paper } from '../../shared/schemas'
 import type { PageBlock } from '../../shared/pagination'
 import { buildAnswerHtml, buildPaperHtml } from './html'
+import { createTempDirectory } from './temp'
 
 export async function renderHtmlToPdf(html: string, outputPath: string): Promise<number> {
-  const tempDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'lingdian-pdf-'))
+  const tempDirectory = await createTempDirectory('lingdian-pdf-')
   const htmlPath = path.join(tempDirectory, 'document.html')
   await fs.writeFile(htmlPath, html, 'utf8')
   const window = new BrowserWindow({
