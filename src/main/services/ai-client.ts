@@ -184,11 +184,35 @@ export function parseJsonResponse(raw: string): unknown {
   }
 
   const candidate = text.slice(start)
-  const parsed = tryParseJson(candidate) ?? tryParseJson(closeTruncatedJson(candidate))
+  const balanced = extractBalancedJson(candidate) ?? candidate
+  const parsed = tryParseJson(balanced) ?? tryParseJson(closeTruncatedJson(balanced))
   if (parsed !== undefined) {
     return Array.isArray(parsed) ? { items: parsed } : parsed
   }
   throw new Error('AI 返回的 JSON 格式不合法')
+}
+
+function extractBalancedJson(value: string): string | null {
+  if (value[0] !== '{' && value[0] !== '[') return null
+  const stack: string[] = []
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (char === '\\') escaped = true
+      else if (char === '"') inString = false
+      continue
+    }
+    if (char === '"') inString = true
+    else if (char === '{' || char === '[') stack.push(char)
+    else if (char === '}' || char === ']') {
+      stack.pop()
+      if (stack.length === 0) return value.slice(0, index + 1)
+    }
+  }
+  return null
 }
 
 function tryParseJson(value: string): unknown {

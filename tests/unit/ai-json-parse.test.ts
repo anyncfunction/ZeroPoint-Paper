@@ -11,6 +11,12 @@ describe('AI JSON parsing', () => {
     expect(parseJsonResponse('[{"stem":"a"}]')).toEqual({ items: [{ stem: 'a' }] })
   })
 
+  it('ignores prose after a complete JSON object', () => {
+    expect(parseJsonResponse('{"items":[{"stem":"a"}]}\n以上是全部题目。')).toEqual({
+      items: [{ stem: 'a' }]
+    })
+  })
+
   it('tolerates trailing commas', () => {
     expect(parseJsonResponse('{"items":[{"stem":"a",},],}')).toEqual({
       items: [{ stem: 'a' }]
