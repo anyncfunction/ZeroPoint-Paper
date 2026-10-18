@@ -1,10 +1,19 @@
 import { resolve } from 'node:path'
 import { builtinModules } from 'node:module'
+import { mkdirSync } from 'node:fs'
 import { build } from 'vite'
 import react from '@vitejs/plugin-react'
 import { externalizeDepsPlugin } from 'electron-vite'
 
 const root = resolve(import.meta.dirname, '..')
+
+// 部分机器上的杀软会拦截 esbuild 清理系统临时文件，报
+// "remove ...\Temp\esbuild-xxx: Access is denied"。把临时目录放到项目内规避。
+const tempRoot = resolve(root, '.build-cache', 'tmp')
+mkdirSync(tempRoot, { recursive: true })
+process.env.TMP = tempRoot
+process.env.TEMP = tempRoot
+
 const sharedAlias = {
   '@shared': resolve(root, 'src/shared')
 }

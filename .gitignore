@@ -12,6 +12,7 @@ tests/e2e/.tmp-*/
 tests/e2e/visual-output-preview.png
 导出/
 .icon-sizes/
+.build-cache/
 .DS_Store
 .superpowers/
 Thumbs.db
