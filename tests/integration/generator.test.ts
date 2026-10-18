@@ -156,6 +156,10 @@ beforeAll(async () => {
         // 模拟模型把 items 写成一串数字，触发一次带错误说明的重试。
         content = JSON.stringify({ items: items.map((_, index) => index + 1) })
       }
+      if (prompt.includes('PROSE_PREFIX')) {
+        // 模拟模型在 JSON 前写了解析说明，其中 LaTeX 花括号不应被当成 JSON 起点。
+        content = `结果为 $\\frac{a+b+c}{|abc|}$ 的值为 3。\n${content}`
+      }
       response.writeHead(200, { 'Content-Type': 'application/json' })
       response.end(
         JSON.stringify({
@@ -348,6 +352,40 @@ describe('generation pipeline', () => {
     const questions = paper.sections.flatMap((section) => section.questions)
     expect(questions.length).toBeGreaterThan(0)
     expect(questions.every((question) => typeof question.stem === 'string')).toBe(true)
+  })
+
+  it('ignores latex braces in prose before the json payload', async () => {
+    const config: ExamConfig = {
+      grade: 7,
+      edition: 'renjiao',
+      chapterIds: ['renjiao-7-a-1'],
+      pageCount: 2,
+      difficulty: 6,
+      typeCount: 1,
+      types: ['single_choice'],
+      manualCounts: {},
+      totalScore: 100,
+      durationMinutes: 90,
+      title: '前置公式说明测试',
+      exportFormats: ['pdf'],
+      notes: 'PROSE_PREFIX',
+      avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test',
+      name: 'Mock',
+      baseUrl,
+      model: 'mock-model',
+      authMode: 'user-key',
+      timeoutMs: 30_000,
+      concurrency: 1,
+      reasoningEffort: 'medium',
+      answerReview: false
+    }
+    const paper = await generatePaper(config, { profile, apiKey: '' })
+    const questions = paper.sections.flatMap((section) => section.questions)
+    expect(questions.length).toBeGreaterThan(0)
+    expect(questions.every((question) => question.stem.length > 0)).toBe(true)
   })
 })
 

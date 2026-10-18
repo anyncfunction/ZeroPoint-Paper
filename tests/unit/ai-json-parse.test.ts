@@ -79,4 +79,18 @@ describe('AI JSON parsing', () => {
       items: [{ stem: '如图，"AB" 是直径，求 "CD" 的长。' }]
     })
   })
+
+  it('skips latex braces that appear before the json object', () => {
+    const raw = String.raw`结果为 $\frac{a+b+c}{|abc|}$ 的值为 3。{"items":[{"stem":"a"}]}`
+    expect(parseJsonResponse(raw)).toEqual({ items: [{ stem: 'a' }] })
+  })
+
+  it('finds the json object even when prose has several latex braces', () => {
+    const raw = String.raw`设 $x\in\{1,2\}$，$y=\frac{a}{b}$，输出：{"items":[{"stem":"b"}]} 完毕。`
+    expect(parseJsonResponse(raw)).toEqual({ items: [{ stem: 'b' }] })
+  })
+
+  it('does not treat a bare latex group as json', () => {
+    expect(() => parseJsonResponse(String.raw`答案：\frac{a+b+c}{|abc|}\)`)).toThrow(/不是 JSON/)
+  })
 })

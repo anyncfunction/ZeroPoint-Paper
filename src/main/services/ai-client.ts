@@ -177,20 +177,46 @@ export async function completeJson(
 export function parseJsonResponse(raw: string): unknown {
   const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i)
   const text = (fenced?.[1] ?? raw).trim()
-  const start = text.search(/[{[]/)
-  if (start < 0) {
+  const starts = jsonStartIndices(text)
+  if (starts.length === 0) {
     const head = text.replace(/\s+/g, ' ').slice(0, 120)
     throw new Error(`AI 返回内容不是 JSON${head ? `（开头：${head}）` : ''}`)
   }
 
-  const candidate = text.slice(start)
-  const parsed =
-    parseCandidate(candidate) ??
-    parseCandidate(candidate.replace(/[\u201c\u201d]/g, '"'))
-  if (parsed !== undefined) {
-    return Array.isArray(parsed) ? { items: parsed } : parsed
+  for (const start of starts) {
+    const candidate = text.slice(start)
+    const parsed =
+      parseCandidate(candidate) ??
+      parseCandidate(candidate.replace(/[\u201c\u201d]/g, '"'))
+    if (parsed !== undefined) {
+      return Array.isArray(parsed) ? { items: parsed } : parsed
+    }
   }
+  const candidate = text.slice(starts[0])
   throw new Error(`AI 返回的 JSON 格式不合法（${jsonErrorDetail(candidate)}）`)
+}
+
+// 题干里的 LaTeX（如 \frac{a+b+c}）也带花括号，不能把第一个 { 直接当成 JSON 起点。
+// 只接受「{ 后面紧跟引号或 }」和「[ 后面紧跟 { 或引号」这类真正的 JSON 结构。
+function jsonStartIndices(text: string): number[] {
+  const preferred: number[] = []
+  const fallback: number[] = []
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]
+    if (char !== '{' && char !== '[') continue
+    let next = index + 1
+    while (next < text.length && /\s/.test(text[next])) next += 1
+    const follower = text[next]
+    const isObject = char === '{' && (follower === '"' || follower === '}')
+    const isArray =
+      char === '[' &&
+      (follower === '{' || follower === '"' || follower === ']' || follower === '-' || /[0-9]/.test(follower ?? ''))
+    if (!isObject && !isArray) continue
+    const rest = text.slice(index)
+    if (/^[{\[]\s*"(?:items|questions|upgrades|corrections)"/.test(rest)) preferred.push(index)
+    else fallback.push(index)
+  }
+  return [...preferred, ...fallback]
 }
 
 function parseCandidate(value: string): unknown {
