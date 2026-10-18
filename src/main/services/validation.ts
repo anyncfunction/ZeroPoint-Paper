@@ -2,6 +2,7 @@ import katex from 'katex'
 import { z } from 'zod'
 import { normalizeMathDelimiters } from '../../shared/rich-text'
 import { normalizeStem } from '../../shared/fingerprint'
+import { normalizeFigureInput, requiresFigure } from './figure-input'
 import {
   figureSpecSchema,
   optionSchema,
@@ -26,7 +27,7 @@ const RawItemSchema = z.object({
   answer: z.string().min(1),
   explanation: z.string().min(1),
   figure: z.preprocess(
-    (value) => (value === null ? undefined : value),
+    normalizeFigureInput,
     figureSpecSchema.optional()
   )
 })
@@ -63,7 +64,10 @@ function pointLabels(text: string): Set<string> {
 }
 
 function validateFigure(item: z.infer<typeof RawItemSchema>): void {
-  if (!item.figure) return
+  if (!item.figure) {
+    if (requiresFigure(item.stem)) throw new Error('题干引用了配图，但没有提供有效配图；请补齐配图或改写为条件完整的纯文字题')
+    return
+  }
   const geometryReference = /如图|图形|图像|函数|数轴|坐标系|三角形|四边形|正方形|长方形|矩形|菱形|平行四边形|圆|折叠|交点|垂足|切线/.test(
     item.stem
   )
@@ -120,6 +124,17 @@ export function isItemPayloadError(error: unknown): error is ItemPayloadError {
   return error instanceof ItemPayloadError
 }
 
+export class FigurePayloadError extends Error {
+  constructor(
+    message: string,
+    readonly slots: number[],
+    readonly items: unknown[]
+  ) {
+    super(message)
+    this.name = 'FigurePayloadError'
+  }
+}
+
 const TYPE_LABELS: Record<string, string> = {
   number: '数字',
   string: '字符串',
@@ -151,12 +166,17 @@ function receivedLabel(value: unknown): string {
 // Zod 默认把问题列表序列化成 JSON，直接抛给用户既难读也看不出该改哪道题。
 function describeIssues(error: z.ZodError): string {
   const parts = error.issues.slice(0, 4).map((issue) => {
-    const [root, index, field] = issue.path
+    const [root, index, field, nestedField] = issue.path
     const position =
       (root === 'items' || root === 'questions') && typeof index === 'number'
         ? `第 ${index + 1} 题`
         : ''
-    const fieldLabel = typeof field === 'string' ? FIELD_LABELS[field] ?? field : ''
+    const fieldLabel = field === 'figure' && nestedField === 'template'
+      ? '配图模板'
+      : typeof field === 'string' ? FIELD_LABELS[field] ?? field : ''
+    if (issue.code === 'invalid_enum_value' && field === 'figure') {
+      return `${position}的${fieldLabel}不受支持（实际值：${JSON.stringify(issue.received).slice(0, 80)}）；必须使用 ${issue.options.join('、')}`
+    }
     if (issue.code === 'invalid_type') {
       if (position && !fieldLabel) {
         return `${position}应为题目对象，实际是${receivedLabel((issue as { received?: unknown }).received)}`
@@ -271,7 +291,12 @@ export function rawItems(
   if (Array.isArray(declared)) assertItemShapes(declared)
   const result = RawItemsSchema.safeParse(normalized)
   if (!result.success) {
-    throw new Error(describeIssues(result.error))
+    const message = describeIssues(result.error)
+    if (Array.isArray(declared) && result.error.issues.every((issue) => issue.path[2] === 'figure')) {
+      const slots = [...new Set(result.error.issues.map((issue) => Number(issue.path[1]) + 1))]
+      throw new FigurePayloadError(message, slots, declared)
+    }
+    throw new Error(message)
   }
   const parsed = result.data
   const items = parsed.items ?? parsed.questions ?? []
@@ -282,6 +307,8 @@ export function rawItems(
     )
   }
   const chapterIds = new Set(chapters.map((chapter) => chapter.id))
+  const figureErrors: string[] = []
+  const figureSlots: number[] = []
 
   items.forEach((item, index) => {
     if (!options.allowAnySlot && item.slot !== undefined && item.slot !== index + 1) {
@@ -311,8 +338,16 @@ export function rawItems(
     assertMath(item.stem)
     assertMath(item.answer)
     assertMath(item.explanation)
-    validateFigure(item)
+    try {
+      validateFigure(item)
+    } catch (error) {
+      figureErrors.push(`第 ${index + 1} 题：${(error as Error).message}`)
+      figureSlots.push(index + 1)
+    }
   })
+  if (figureErrors.length > 0) {
+    throw new FigurePayloadError(figureErrors.join('；'), figureSlots, items)
+  }
   return items
 }
 
@@ -378,16 +413,17 @@ export function validateRegeneratedQuestion(
   chapterId: string,
   idFactory: () => string
 ): Question {
-  const item = RawItemSchema.parse(raw)
   const items = rawItems(
-    { items: [{ ...item, slot: 1, chapterId }] },
+    { items: [raw && typeof raw === 'object' && !Array.isArray(raw) ? { ...raw, slot: 1, chapterId } : raw] },
     1,
     original.type,
     [{ id: chapterId } as Chapter]
   )
+  const item = items[0]
   assertMath(item.stem)
+  const { figure: _oldFigure, ...originalFields } = original
   return {
-    ...original,
+    ...originalFields,
     id: idFactory(),
     chapterId,
     knowledgePoint: item.knowledgePoint,

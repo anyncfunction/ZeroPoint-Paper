@@ -265,6 +265,19 @@ async function main() {
       path: path.join(__dirname, 'visual-output-preview.png'),
       fullPage: true
     })
+    const figures = page.locator('.paper-preview-list svg.math-figure')
+    const figureCount = await figures.count()
+    if (figureCount === 0) throw new Error('No controlled figures rendered in the preview')
+    for (let index = 0; index < figureCount; index += 1) {
+      const figure = figures.nth(index)
+      const box = await figure.boundingBox()
+      if (!box || box.width < 50 || box.height < 25) throw new Error('Figure has no usable dimensions')
+      if (/NaN|Infinity/.test(await figure.evaluate((element) => element.outerHTML))) {
+        throw new Error('Figure contains invalid coordinates')
+      }
+      if (index < 2) await figure.screenshot({ path: path.join(testOutput, `figure-preview-${index + 1}.png`) })
+    }
+    console.log('RENDERED_FIGURES', figureCount)
   } finally {
     await electronApp.close()
     await new Promise((resolve) => server.close(resolve))

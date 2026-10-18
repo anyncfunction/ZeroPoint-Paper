@@ -158,6 +158,31 @@ beforeAll(async () => {
           : prompt.includes('独立数学解题与审校员')
             ? { corrections: items.slice(0, 1) }
             : { items }
+      if (parsed.model?.startsWith('figure-')) {
+        const hardening = prompt.includes('第二轮强制拔高')
+        const reviewing = prompt.includes('独立数学解题与审校员')
+        const single = prompt.includes('只命制 1 道')
+        if (parsed.model === 'figure-alias' && hardening) {
+          const first = items[0] as Record<string, unknown>
+          const figure = first.figure as Record<string, unknown>
+          first.figure = { ...figure, template: undefined, type: 'customGeometry' }
+        }
+        if ((parsed.model === 'figure-bad-harden' && hardening) ||
+            (parsed.model === 'figure-bad-review' && reviewing) ||
+            (parsed.model === 'figure-bad-forever' && (hardening || single))) {
+          const affected = parsed.model === 'figure-bad-forever' ? 1 : 2
+          items.forEach((entry, index) => {
+            const value = entry as Record<string, unknown>
+            if (index < affected) value.figure = { template: 'uncontrolled_diagram', params: {} }
+            else value.stem = `${value.stem} 正常修改保留。`
+          })
+          if (reviewing) (payload as { corrections: object[] }).corrections = items
+        }
+        if (single && parsed.model !== 'figure-bad-forever') {
+          const value = items[0] as Record<string, unknown>
+          value.stem = `${value.stem} 仅修复此题。`
+        }
+      }
       let content = JSON.stringify(payload)
       if (prompt.includes('BROKEN_LATEX')) {
         // 模拟部分模型把 LaTeX 反斜杠只写一层，导致 JSON 转义非法。
@@ -606,6 +631,51 @@ describe('generation pipeline', () => {
     await expect(generatePaper({ ...config, notes: 'EMPTY_ALWAYS' }, { profile, apiKey: '' }))
       .rejects.toThrow('单选题生成失败：AI 接口未返回内容')
     expect(requests.length - failedStart).toBe(2)
+  })
+
+  it.each(['figure-alias', 'figure-bad-harden', 'figure-bad-review'])('recovers invalid figures without replacing valid upgraded questions: %s', async (model) => {
+    const config: ExamConfig = {
+      grade: 7, edition: 'renjiao', chapterIds: ['renjiao-7-a-1'],
+      pageCount: 2, difficulty: 10, typeCount: 1, types: ['solution'],
+      manualCounts: { solution: 3 }, totalScore: 100, durationMinutes: 90,
+      title: '配图恢复', exportFormats: ['pdf'], notes: '', avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test', name: 'Mock', baseUrl, model, authMode: 'user-key',
+      timeoutMs: 30000, concurrency: 1, reasoningEffort: 'medium', answerReview: model === 'figure-bad-review'
+    }
+    const start = requests.length
+    const progress: string[] = []
+    const paper = await generatePaper(config, { profile, apiKey: '', onProgress: (event) => progress.push(event.message) })
+    const questions = paper.sections[0].questions
+    expect(questions).toHaveLength(3)
+    expect(questions.every((question) => question.difficulty >= 9)).toBe(true)
+    if (model === 'figure-alias') {
+      expect(questions[0].figure?.template).toBe('custom_geometry')
+      expect(requests.length - start).toBe(2)
+      expect(progress.some((message) => message.includes('仅重新命制'))).toBe(false)
+    } else {
+      expect(questions[2].stem).toContain('正常修改保留')
+      expect(questions.slice(0, 2).every((question) => question.stem.includes('仅修复此题'))).toBe(true)
+      expect(progress.some((message) => message.includes('第 1、2 题配图异常'))).toBe(true)
+      expect(requests.length - start).toBe(model === 'figure-bad-harden' ? 5 : 6)
+    }
+  })
+
+  it('stops after bounded attempts when a model cannot produce any valid figure', async () => {
+    const config: ExamConfig = {
+      grade: 7, edition: 'renjiao', chapterIds: ['renjiao-7-a-1'],
+      pageCount: 2, difficulty: 10, typeCount: 1, types: ['solution'],
+      manualCounts: { solution: 3 }, totalScore: 100, durationMinutes: 90,
+      title: '配图重试上限', exportFormats: ['pdf'], notes: '', avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test', name: 'Mock', baseUrl, model: 'figure-bad-forever', authMode: 'user-key',
+      timeoutMs: 30000, concurrency: 1, reasoningEffort: 'medium', answerReview: false
+    }
+    const start = requests.length
+    await expect(generatePaper(config, { profile, apiKey: '' })).rejects.toThrow(/uncontrolled_diagram/)
+    expect(requests.length - start).toBe(6)
   })
 })
 

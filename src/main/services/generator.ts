@@ -33,6 +33,7 @@ import {
   verifySectionPrompt
 } from './prompt'
 import {
+  FigurePayloadError,
   isItemPayloadError,
   materializeSection,
   normalizeStem,
@@ -234,6 +235,9 @@ async function requestSection(
     })
     return { parsed }
   } catch (error) {
+    if ((error as Error & { cause?: unknown }).cause instanceof FigurePayloadError) {
+      return { parsed: await recoverFigureItems(error, config, section, options, chapters) }
+    }
     // 模型只吐题号或非题目内容时，整组重试往往仍会失败，改为逐题生成兜底。
     if (!isItemPayloadError((error as Error & { cause?: unknown }).cause)) throw error
     throwIfAborted(options.signal)
@@ -299,6 +303,34 @@ ${truncated ? '上一次输出因长度限制被截断，请直接给出精简�
     }
   )
   return rawItems({ items: generated }, section.questionCount, section.type, chapters)
+}
+
+async function recoverFigureItems(
+  error: unknown,
+  config: ExamConfig,
+  section: ReturnType<typeof createExamPlan>['sections'][number],
+  options: GenerateOptions,
+  chapters: ReturnType<typeof getSelectedChapters>
+): Promise<ReturnType<typeof rawItems>> {
+  const cause = (error as Error & { cause?: unknown }).cause
+  if (!(cause instanceof FigurePayloadError) || cause.items.length !== section.questionCount) throw error
+  throwIfAborted(options.signal)
+  const indexes = cause.slots.map((slot) => slot - 1)
+  options.onProgress?.({
+    stage: 'generating',
+    message: `${section.title}第 ${cause.slots.join('、')} 题配图异常，仅重新命制这些题目`
+  })
+  const replacements = await generateSectionPerQuestion(config, {
+    ...section,
+    questionCount: indexes.length,
+    chapterIds: indexes.map((index) => section.chapterIds[index] ?? section.chapterIds[0]),
+    difficulties: indexes.map((index) => section.difficulties[index] ?? config.difficulty)
+  }, options, chapters)
+  const repaired = [...cause.items]
+  indexes.forEach((index, offset) => {
+    repaired[index] = { ...replacements[offset], slot: index + 1 }
+  })
+  return rawItems({ items: repaired }, section.questionCount, section.type, chapters)
 }
 
 function mergePatchItems(
@@ -380,7 +412,7 @@ ${truncated ? '上一次输出被长度限制截断，请精简内容后直接�
     parse: (value) =>
       mergePatchItems(originalItems, value, section.questionCount, section.type, chapters),
     failureMessage: (error) => `${section.title}难度拔高失败：${error}`
-  })
+  }).catch((error) => recoverFigureItems(error, config, section, options, chapters))
 }
 
 async function verifySectionItems(
@@ -418,7 +450,7 @@ ${truncated ? '上一次输出被长度限制截断，请精简后直接输出�
     parse: (value) =>
       mergePatchItems(items, value, section.questionCount, section.type, chapters),
     failureMessage: (error) => `${section.title}答案复核失败：${error}`
-  })
+  }).catch((error) => recoverFigureItems(error, config, section, options, chapters))
 }
 
 async function repairDuplicateQuestions(

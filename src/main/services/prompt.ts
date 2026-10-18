@@ -1,5 +1,6 @@
 import {
   EDITION_LABELS,
+  figureTemplateSchema,
   GRADE_LABELS,
   QUESTION_TYPE_LABELS,
   type ExamConfig,
@@ -49,7 +50,18 @@ function difficultyContract(level: number): string {
 - 严格使用初中知识和中考常见方法，不引入高中知识，也不使用偏门竞赛技巧。`
 }
 
+const FIGURE_CONTRACT = `配图字段 figure 必须是对象，例如 {"template":"number_line","params":{"min":-5,"max":5,"ticks":10}}；自定义几何图的点线数据放在 geometry 对象中。
+template 只能精确使用以下 ID：${figureTemplateSchema.options.join('、')}。不要用中文名、type 字段、函数名称或自创模板名代替 template。
+没有配图时，新命题省略 figure，修改已有题目用 figure:null 明确删除。禁止 {"template":"none"}、空对象、字符串或数组。
+题干使用“如图”“图中”“下图”时必须提供完整有效配图；画不出的题目必须改写为条件完整、无需依赖图片的同难度文字题，并同步修改答案解析。`
+
+const FIGURE_PATCH_RULES = `配图修改规则：
+- 未提供 figure 时沿用原图；只有图形关系、点名和数值都未改变时才能沿用。
+- 改动题干涉及图形关系、点名、坐标或数值时，必须返回完整的新 figure 对象，禁止只返回 template 或部分参数。
+- 若改为无需配图的文字题，显式返回 figure:null，并删除“如图”等依赖图片的表述，补齐全部文字条件。`
+
 const FIGURE_GUIDE = `
+${FIGURE_CONTRACT}
 配图只能使用以下模板，不得输出 SVG、HTML 或图片链接：
 - number_line: params { min, max, ticks }
 - coordinate_plane: params { xMin, xMax, yMin, yMax }
@@ -61,7 +73,7 @@ const FIGURE_GUIDE = `
 - custom_geometry: geometry { points, segments, rightAngles?, annotations? }；params 可省略
 
 custom_geometry 示例：
-{"template":"custom_geometry","geometry":{"points":[{"id":"A","label":"A","x":12,"y":18},{"id":"B","label":"B","x":82,"y":18},{"id":"C","label":"C","x":48,"y":88},{"id":"D","label":"D","x":62,"y":16}],"segments":[{"from":"A","to":"B"},{"from":"B","to":"C"},{"from":"C","to":"A"},{"from":"C","to":"D","dashed":true}],"rightAngles":[{"vertex":"A","from":"B","to":"C"}],"annotations":[{"x":55,"y":27,"text":"2:3"}]}}
+{"template":"custom_geometry","geometry":{"points":[{"id":"A","label":"A","x":12,"y":18},{"id":"B","label":"B","x":82,"y":18},{"id":"C","label":"C","x":12,"y":88},{"id":"D","label":"D","x":47,"y":53}],"segments":[{"from":"A","to":"B"},{"from":"B","to":"C"},{"from":"C","to":"A"},{"from":"A","to":"D","dashed":true}],"rightAngles":[{"vertex":"A","from":"B","to":"C"}],"annotations":[]}}
 坐标范围均为 0–100，x 向右增大，y 向上增大。所有点坐标必须分散，不能重叠。
 
 配图规则：
@@ -73,6 +85,7 @@ custom_geometry 示例：
 `.trim()
 
 const ALGEBRA_FIGURE_GUIDE = `
+${FIGURE_CONTRACT}
 配图只能使用以下模板，不得输出 SVG、HTML 或图片链接：
 - number_line: params { min, max, ticks }
 - coordinate_plane: params { xMin, xMax, yMin, yMax }
@@ -349,6 +362,8 @@ ${figureGuideFor(getSelectedChapters(section.chapterIds), section.type)}
 
 只返回需要实质拔高的题目，不需要返回未修改的题。为降低输出成本，使用 upgrades 格式：
 {"upgrades":[{"slot":1,"reason":"为何原题太简单","stem":"拔高后的题干","options":[],"answer":"答案","explanation":"逐步解析","figure":null}]}
+示例中的 figure:null 只适用于完全不需要配图的新题干。
+${FIGURE_PATCH_RULES}
 未列出的字段沿用原题；若所有题都已达标，返回 {"upgrades":[]}。只输出 JSON。`
 }
 
@@ -375,6 +390,9 @@ ${JSON.stringify(items, null, 2)}
 4. 检查是否存在歧义、多解漏解、图形与题干不一致。
 5. 若题目错误、过弱或答案解析有误，直接改写成可评分且难度不降低的正确题目。
 6. 若原题正确，可以保留题干，但必须把解析整理为清晰的逐步过程。
+
+${figureGuideFor(getSelectedChapters(section.chapterIds), section.type)}
+${FIGURE_PATCH_RULES}
 
 只返回需要修改的字段，避免重复输出正确题目：
 {"corrections":[{"slot":1,"reason":"发现的问题","answer":"修正答案","explanation":"完整修正解析"}]}
