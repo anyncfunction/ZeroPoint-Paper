@@ -23,10 +23,12 @@ import {
   questionRegeneratePrompt,
   repairPrompt,
   sectionPrompt,
+  singleQuestionPrompt,
   systemPrompt,
   verifySectionPrompt
 } from './prompt'
 import {
+  isItemPayloadError,
   materializeSection,
   normalizeStem,
   rawItems,
@@ -126,20 +128,21 @@ async function requestWithRepair<T>(spec: RepairRequest<T>): Promise<T> {
 
   throwIfAborted(spec.options.signal)
   let rawText = await request(spec.prompt, spec.maxTokens)
-  let lastError = ''
+  let lastError = new Error('AI 未返回可用的题目内容')
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       return spec.parse(parseJsonResponse(rawText))
     } catch (error) {
-      lastError = (error as Error).message
+      lastError = error as Error
       if (attempt === 0) {
         throwIfAborted(spec.options.signal)
-        const next = spec.repair(rawText, lastError)
+        const next = spec.repair(rawText, lastError.message)
         rawText = await request(next.prompt, next.maxTokens)
       }
     }
   }
-  throw new Error(spec.failureMessage(lastError))
+  // 保留原始错误类型，调用方可以据此决定是否降级重试。
+  throw new Error(spec.failureMessage(lastError.message), { cause: lastError })
 }
 
 async function requestSection(
@@ -149,20 +152,75 @@ async function requestSection(
 ): Promise<unknown> {
   const chapters = getSelectedChapters(config.chapterIds)
   const maxTokens = maxTokensFor(section.type, section.questionCount)
-  const parsed = await requestWithRepair({
-    options,
-    profile: options.profile,
-    system: systemPrompt(options.profile.reasoningEffort),
-    prompt: sectionPrompt(config, section, section.difficulties),
-    maxTokens,
-    repair: (rawText, error) => ({
-      prompt: repairPrompt(config, section, rawText, error),
-      maxTokens: Math.min(16_000, Math.round(maxTokens * 1.5))
-    }),
-    parse: (value) => rawItems(value, section.questionCount, section.type, chapters),
-    failureMessage: (error) => `${section.title}生成失败：${error}`
-  })
-  return { parsed }
+  try {
+    const parsed = await requestWithRepair({
+      options,
+      profile: options.profile,
+      system: systemPrompt(options.profile.reasoningEffort),
+      prompt: sectionPrompt(config, section, section.difficulties),
+      maxTokens,
+      repair: (rawText, error) => ({
+        prompt: repairPrompt(config, section, rawText, error),
+        maxTokens: Math.min(16_000, Math.round(maxTokens * 1.5))
+      }),
+      parse: (value) => rawItems(value, section.questionCount, section.type, chapters),
+      failureMessage: (error) => `${section.title}生成失败：${error}`
+    })
+    return { parsed }
+  } catch (error) {
+    // 模型只吐题号或非题目内容时，整组重试往往仍会失败，改为逐题生成兜底。
+    if (!isItemPayloadError((error as Error & { cause?: unknown }).cause)) throw error
+    throwIfAborted(options.signal)
+    options.onProgress?.({
+      stage: 'generating',
+      message: `${section.title}结构异常，改为逐题生成`
+    })
+    return { parsed: await generateSectionPerQuestion(config, section, options, chapters) }
+  }
+}
+
+async function generateSectionPerQuestion(
+  config: ExamConfig,
+  section: ReturnType<typeof createExamPlan>['sections'][number],
+  options: GenerateOptions,
+  chapters: ReturnType<typeof getSelectedChapters>
+): Promise<ReturnType<typeof rawItems>> {
+  const slots = Array.from({ length: section.questionCount }, (_, index) => index)
+  const generated = await mapWithConcurrency(
+    slots,
+    Math.min(2, options.profile.concurrency),
+    async (index) => {
+      throwIfAborted(options.signal)
+      const chapterId = section.chapterIds[index] ?? section.chapterIds[0] ?? chapters[0]?.id
+      if (!chapterId) throw new Error(`${section.title}缺少可用章节`)
+      const difficulty = section.difficulties[index] ?? config.difficulty
+      const basePrompt = singleQuestionPrompt(config, section, index + 1, difficulty, chapterId)
+      const maxTokens = maxTokensFor(section.type, 1)
+      const items = await requestWithRepair({
+        options,
+        profile: options.profile,
+        system: systemPrompt(options.profile.reasoningEffort),
+        prompt: basePrompt,
+        maxTokens,
+        repair: (rawText, error) => ({
+          prompt: `${basePrompt}
+
+上一次输出未通过校验：
+${error}
+
+上一次输出：
+${rawText.slice(0, 4_000)}
+
+请重新输出完整 JSON，items 中恰好 1 个题目对象。`,
+          maxTokens: Math.min(8_000, Math.round(maxTokens * 1.5))
+        }),
+        parse: (value) => rawItems(value, 1, section.type, chapters, { allowAnySlot: true }),
+        failureMessage: (error) => `${section.title}第 ${index + 1} 题生成失败：${error}`
+      })
+      return { ...items[0], slot: index + 1 }
+    }
+  )
+  return rawItems({ items: generated }, section.questionCount, section.type, chapters)
 }
 
 function mergePatchItems(

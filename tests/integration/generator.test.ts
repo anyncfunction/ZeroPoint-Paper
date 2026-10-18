@@ -111,20 +111,25 @@ function mockItems(prompt: string): object[] {
       )
     )
   }
-  const count = Number(prompt.match(/题目数量：(\d+)/)?.[1] ?? 0)
+  const single = prompt.includes('只命制 1 道')
+  const count = single ? 1 : Number(prompt.match(/题目数量：(\d+)/)?.[1] ?? 0)
   const type = typeFromPrompt(prompt)
-  const slots = [...prompt.matchAll(/章节ID ([a-zA-Z0-9-]+)，难度 (\d+)\/10/g)]
+  const singleSlot = Number(prompt.match(/"slot":\s*(\d+)/)?.[1] ?? 1)
+  const slots = single
+    ? [...prompt.matchAll(/章节ID：([a-zA-Z0-9-]+)）\n题型：[a-z_]+\n难度：(\d+)\/10/g)]
+    : [...prompt.matchAll(/章节ID ([a-zA-Z0-9-]+)，难度 (\d+)\/10/g)]
   const embeddedChapters = [
     ...prompt.matchAll(/"chapterId"\s*:\s*"([^"]+)"/g)
   ].map((match) => match[1])
   return Array.from({ length: count }, (_, index) => {
+    const position = single ? singleSlot - 1 : index
     const chapterId =
       slots[index]?.[1] ??
       embeddedChapters[index] ??
       embeddedChapters[0] ??
       'renjiao-8-a-1'
     const difficulty = Number(slots[index]?.[2] ?? 6)
-    return itemAt(index, type, chapterId, difficulty)
+    return itemAt(position, type, chapterId, difficulty)
   })
 }
 
@@ -154,6 +159,10 @@ beforeAll(async () => {
       }
       if (prompt.includes('NUMERIC_ITEMS') && !prompt.includes('上一次输出未通过校验')) {
         // 模拟模型把 items 写成一串数字，触发一次带错误说明的重试。
+        content = JSON.stringify({ items: items.map((_, index) => index + 1) })
+      }
+      if (prompt.includes('ALWAYS_NUMERIC') && prompt.includes('题目数量：')) {
+        // 模拟整组生成始终只给题号，迫使系统降级为逐题生成。
         content = JSON.stringify({ items: items.map((_, index) => index + 1) })
       }
       if (prompt.includes('PROSE_PREFIX')) {
@@ -386,6 +395,47 @@ describe('generation pipeline', () => {
     const questions = paper.sections.flatMap((section) => section.questions)
     expect(questions.length).toBeGreaterThan(0)
     expect(questions.every((question) => question.stem.length > 0)).toBe(true)
+  })
+
+  it('falls back to per-question generation when the model keeps returning only slot numbers', async () => {
+    const config: ExamConfig = {
+      grade: 7,
+      edition: 'renjiao',
+      chapterIds: ['renjiao-7-a-1', 'renjiao-7-a-2'],
+      pageCount: 2,
+      difficulty: 6,
+      typeCount: 2,
+      types: ['single_choice', 'fill_blank'],
+      manualCounts: {},
+      totalScore: 100,
+      durationMinutes: 90,
+      title: '逐题兜底测试',
+      exportFormats: ['pdf'],
+      notes: 'ALWAYS_NUMERIC',
+      avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test',
+      name: 'Mock',
+      baseUrl,
+      model: 'mock-model',
+      authMode: 'user-key',
+      timeoutMs: 30_000,
+      concurrency: 2,
+      reasoningEffort: 'medium',
+      answerReview: false
+    }
+    const messages: string[] = []
+    const paper = await generatePaper(config, {
+      profile,
+      apiKey: '',
+      onProgress: (event) => messages.push(event.message)
+    })
+    const questions = paper.sections.flatMap((section) => section.questions)
+    expect(questions.length).toBeGreaterThan(0)
+    expect(questions.every((question) => question.stem.length > 2)).toBe(true)
+    expect(questions.every((question) => question.answer.length > 0)).toBe(true)
+    expect(messages.some((message) => message.includes('改为逐题生成'))).toBe(true)
   })
 })
 

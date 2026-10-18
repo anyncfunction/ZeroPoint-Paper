@@ -98,6 +98,26 @@ function validateFigure(item: z.infer<typeof RawItemSchema>): void {
 
 export { normalizeStem }
 
+export type ItemPayloadProblem =
+  /** 模型只返回了题号，例如 {"items":[1,2,3,4]} */
+  | 'slot_numbers'
+  /** 模型返回了数字/字符串等非对象元素 */
+  | 'primitive_items'
+
+export class ItemPayloadError extends Error {
+  constructor(
+    message: string,
+    readonly problem: ItemPayloadProblem
+  ) {
+    super(message)
+    this.name = 'ItemPayloadError'
+  }
+}
+
+export function isItemPayloadError(error: unknown): error is ItemPayloadError {
+  return error instanceof ItemPayloadError
+}
+
 const TYPE_LABELS: Record<string, string> = {
   number: '数字',
   string: '字符串',
@@ -181,6 +201,10 @@ function normalizeItemsPayload(raw: unknown): unknown {
   if (Array.isArray(raw)) return { items: raw.map(coerceItem) }
   if (!raw || typeof raw !== 'object') return raw
   const record = raw as Record<string, unknown>
+  // 单题生成时模型可能直接返回一个题目对象，没有包 items。
+  if (typeof record.stem === 'string' && typeof record.answer === 'string') {
+    return { items: [coerceItem(record)] }
+  }
   const candidates = (['items', 'questions'] as const).map((key) => ({
     key,
     items: toItemArray(record[key])
@@ -206,13 +230,43 @@ function normalizeItemsPayload(raw: unknown): unknown {
   return raw
 }
 
+// 在进入 Zod 之前先判断整体形状：只有题号或纯标量时，重试提示词要换一种说法。
+function assertItemShapes(items: unknown[]): void {
+  if (items.length === 0) return
+  const objects = items.filter(
+    (item) => item !== null && typeof item === 'object' && !Array.isArray(item)
+  ).length
+  if (objects === items.length) return
+  if (objects > 0) {
+    throw new ItemPayloadError(
+      'AI 返回的题目列表里混有非题目内容，应全部为题目对象。',
+      'primitive_items'
+    )
+  }
+  const allNumbers = items.every((item) => typeof item === 'number')
+  if (allNumbers) {
+    throw new ItemPayloadError(
+      `AI 只返回了题号（${items.join('、')}），没有返回题目内容。`,
+      'slot_numbers'
+    )
+  }
+  throw new ItemPayloadError('AI 返回的题目列表不是题目对象数组。', 'primitive_items')
+}
+
 export function rawItems(
   raw: unknown,
   expectedCount: number,
   type: QuestionType,
-  chapters: Chapter[]
+  chapters: Chapter[],
+  options: { allowAnySlot?: boolean } = {}
 ): Array<z.infer<typeof RawItemSchema>> {
   const normalized = normalizeItemsPayload(raw)
+  const normalizedRecord =
+    normalized && typeof normalized === 'object'
+      ? (normalized as Record<string, unknown>)
+      : null
+  const declared = normalizedRecord?.items ?? normalizedRecord?.questions
+  if (Array.isArray(declared)) assertItemShapes(declared)
   const result = RawItemsSchema.safeParse(normalized)
   if (!result.success) {
     throw new Error(describeIssues(result.error))
@@ -225,7 +279,7 @@ export function rawItems(
   const chapterIds = new Set(chapters.map((chapter) => chapter.id))
 
   items.forEach((item, index) => {
-    if (item.slot !== undefined && item.slot !== index + 1) {
+    if (!options.allowAnySlot && item.slot !== undefined && item.slot !== index + 1) {
       throw new Error(`题目槽位顺序不正确，第 ${index + 1} 题的 slot 应为 ${index + 1}`)
     }
     if (item.chapterId && !chapterIds.has(item.chapterId)) {

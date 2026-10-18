@@ -156,7 +156,7 @@ export function explainGenerationFailure(error: unknown): GenerationFailure {
       raw
     }
   }
-  if (/JSON|题目数量|题目结构|题目对象|校验|公式|重复题|字段|应为/i.test(raw)) {
+  if (/JSON|题目数量|题目结构|题目对象|题号|校验|公式|重复题|字段|应为/i.test(raw)) {
     return {
       title: '生成内容未通过校验',
       message:

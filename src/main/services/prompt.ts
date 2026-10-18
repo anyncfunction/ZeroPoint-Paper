@@ -118,7 +118,14 @@ export function systemPrompt(
 当目标难度为 9–10 时，必须按中考数学最后几道难题和最后两道压轴题的标准命题，不得引入高中知识或偏门竞赛技巧。
 ${thinkingGuide}
 每道题必须有完整答案解析，解析要与题干条件一致。只输出合法 JSON。
-JSON 字符串中的 LaTeX 反斜杠必须双写：triangle、frac、sqrt、leq 等命令前要用两个反斜杠，不能只写一个；字符串内不要出现裸换行。`
+JSON 字符串中的 LaTeX 反斜杠必须双写：triangle、frac、sqrt、leq 等命令前要用两个反斜杠，不能只写一个；字符串内不要出现裸换行。
+
+【输出结构硬性要求】
+- 顶层只能是一个 JSON 对象，形如 {"items":[...]}。
+- items 必须是数组，数组里每个元素都必须是完整的题目对象 { }。
+- 禁止把 items 写成题号数组，例如 {"items":[1,2,3,4]} 是严重错误。
+- 禁止把 items 写成字符串、数字、数组或 null。
+- 每道题必须同时包含 slot、chapterId、knowledgePoint、difficulty、stem、options、answer、explanation 八个字段。`
 }
 
 export function sectionPrompt(
@@ -172,19 +179,25 @@ ${figureGuideFor(chapters, section.type)}
   "items": [
     {
       "slot": 1,
-      "chapterId": "章节ID",
-      "knowledgePoint": "具体知识点",
+      "chapterId": "${section.chapterIds[0] ?? '章节ID'}",
+      "knowledgePoint": "一元二次方程的解法",
       "difficulty": 6,
-      "stem": "题干，公式用 $...$",
-      "options": [{"key":"A","text":"..."}],
-      "answer": "答案；单选只填选项字母",
-      "explanation": "分步解析",
-      "figure": {"template":"triangle","params":{"kind":"right"}}
+      "stem": "解方程 $x^2-5x+6=0$，下列结果正确的是（　　）",
+      "options": [
+        {"key":"A","text":"$x=1$ 或 $x=6$"},
+        {"key":"B","text":"$x=2$ 或 $x=3$"},
+        {"key":"C","text":"$x=-2$ 或 $x=-3$"},
+        {"key":"D","text":"$x=1$ 或 $x=5$"}
+      ],
+      "answer": "B",
+      "explanation": "因式分解得 $(x-2)(x-3)=0$，所以 $x=2$ 或 $x=3$。"
     }
   ]
 }
 
 规则：
+- 上面的结构是范例。items 里必须是一个个题目对象，绝对不能只写题号。
+- 错误写法（禁止）：{"items":[1,2,3,4]}、{"items":["1","2"]}、{"items":null}。
 - items 数量必须恰好为 ${section.questionCount}，slot 从 1 连续编号。
 - 单选题必须恰好 4 个选项且只有一个正确；其他题型 options 必须为 []。
 - 每题都遵循对应槽位的章节与难度。
@@ -199,10 +212,19 @@ export function repairPrompt(
   raw: string,
   errors: string
 ): string {
+  const shapeHint = /题号|题目对象|不是题目|非题目内容/.test(errors)
+    ? `
+【严重错误说明】上一次你只输出了题号或非题目内容，没有真正命题。
+items 里每个元素必须是一个完整的 { } 题目对象，不能是数字、字符串、数组或 null。
+正确：{"items":[{"slot":1,"chapterId":"${section.chapterIds[0] ?? '章节ID'}","knowledgePoint":"知识点","difficulty":6,"stem":"题干","options":[],"answer":"答案","explanation":"解析"}]}
+错误：{"items":[1,2,3,4]}
+请逐题写出完整题干、答案和解析，不要偷懒只列题号。`
+    : ''
   return `${sectionPrompt(config, section, section.difficulties)}
 
 上一次输出未通过校验，错误如下：
 ${errors}
+${shapeHint}
 
 上一次输出：
 ${raw.slice(0, 12_000)}
@@ -211,6 +233,53 @@ ${raw.slice(0, 12_000)}
 注意：最外层必须是 {"items":[ ... ]}，items 的每个元素都必须是完整题目对象，
 包含 slot、chapterId、knowledgePoint、difficulty、stem、options、answer、explanation；
 不能是数字、字符串、数组或 null。单选题的 options 必须是 4 个 {key,text} 对象。`
+}
+
+// 兜底：整组生成连续结构失败时，退化成一次只命一道题，显著降低输出结构复杂度。
+export function singleQuestionPrompt(
+  config: ExamConfig,
+  section: ExamPlanSection,
+  slot: number,
+  difficulty: number,
+  chapterId: string
+): string {
+  const chapter = getSelectedChapters([chapterId])[0]
+  const chapterLine = chapter
+    ? `${chapterDisplayName(chapter)}；知识点：${chapter.knowledgePoints.join('、')}`
+    : chapterId
+  const isChoice = section.type === 'single_choice'
+  return `只命制 1 道${GRADE_LABELS[config.grade]}数学${QUESTION_TYPE_LABELS[section.type]}。
+教材：${EDITION_LABELS[config.edition]} 2024 新版
+章节：${chapterLine}（章节ID：${chapterId}）
+题型：${section.type}
+难度：${difficulty}/10，${difficultyGuide(difficulty)}
+计算量：${config.calculationLoad}/5；思维量：${config.thinkingLoad}/5
+${difficultyContract(difficulty)}
+教师备注：${config.notes || '无'}
+
+${figureGuideFor(chapter ? [chapter] : [], section.type)}
+
+返回结构（items 中恰好 1 个题目对象，字段一个都不能少）：
+{
+  "items": [
+    {
+      "slot": ${slot},
+      "chapterId": "${chapterId}",
+      "knowledgePoint": "具体知识点",
+      "difficulty": ${difficulty},
+      "stem": "完整题干，公式用 $...$",
+      "options": ${isChoice ? '[{"key":"A","text":"..."},{"key":"B","text":"..."},{"key":"C","text":"..."},{"key":"D","text":"..."}]' : '[]'},
+      "answer": "${isChoice ? '正确选项字母' : '答案'}",
+      "explanation": "分步解析"
+    }
+  ]
+}
+
+要求：
+- 只输出上述 JSON，不要解释。
+- items 里必须是题目对象，禁止写成 {"items":[${slot}]}。
+${isChoice ? '- 必须有且仅有 A、B、C、D 四个选项，答案填其中一个字母。' : '- options 必须为空数组。'}
+- 答案和解析必须与题干条件一致。`
 }
 
 export function questionRegeneratePrompt(

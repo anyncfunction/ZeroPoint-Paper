@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { rawItems } from '../../src/main/services/validation'
+import {
+  ItemPayloadError,
+  isItemPayloadError,
+  rawItems
+} from '../../src/main/services/validation'
 import type { Chapter } from '../../src/shared/schemas'
 
 const chapters: Chapter[] = [
@@ -38,8 +42,33 @@ function parse(payload: unknown, count = 2) {
 
 describe('item payload normalization', () => {
   it('reports numbers in items as a readable message instead of raw zod json', () => {
-    expect(() => parse({ items: [1, 2] })).toThrow(/第 1 题应为题目对象，实际是数字/)
+    expect(() => parse({ items: [1, 2] })).toThrow(/只返回了题号/)
     expect(() => parse({ items: [1, 2] })).not.toThrow(/invalid_type/)
+  })
+
+  it('classifies a pure slot number array', () => {
+    try {
+      parse({ items: [1, 2] })
+      throw new Error('should have thrown')
+    } catch (error) {
+      expect(isItemPayloadError(error)).toBe(true)
+      expect((error as ItemPayloadError).problem).toBe('slot_numbers')
+    }
+  })
+
+  it('classifies mixed primitive items', () => {
+    try {
+      parse({ items: [item(0), 'oops'] })
+      throw new Error('should have thrown')
+    } catch (error) {
+      expect(isItemPayloadError(error)).toBe(true)
+      expect((error as ItemPayloadError).problem).toBe('primitive_items')
+    }
+  })
+
+  it('accepts a single bare question object', () => {
+    const items = rawItems(item(0), 1, 'single_choice', chapters)
+    expect(items).toHaveLength(1)
   })
 
   it('accepts a root array of items', () => {
