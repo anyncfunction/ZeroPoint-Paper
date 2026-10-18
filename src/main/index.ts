@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, shell } from 'electron'
@@ -489,9 +490,30 @@ function registerIpc(): void {
   })
 }
 
-const singleInstance = bypassSingleInstance || app.requestSingleInstanceLock()
+// 数据目录不可写时 Electron 会静默退出，用户只看到窗口闪一下。先自检并说明原因。
+function userDataWritable(): boolean {
+  const directory = app.getPath('userData')
+  const probe = path.join(directory, `.write-probe-${process.pid}`)
+  try {
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(probe, '')
+    rmSync(probe, { force: true })
+    return true
+  } catch {
+    dialog.showErrorBox(
+      '无法启动零点出卷',
+      `数据目录不可写：${directory}\n\n请检查该文件夹权限，或用管理员身份启动一次后再试。`
+    )
+    return false
+  }
+}
+
+const dataDirectoryReady = userDataWritable()
+const singleInstance =
+  dataDirectoryReady && (bypassSingleInstance || app.requestSingleInstanceLock())
 if (!singleInstance) {
-  app.quit()
+  if (dataDirectoryReady) app.quit()
+  else app.exit(1)
 } else {
   app.on('second-instance', () => {
     if (mainWindow) {
