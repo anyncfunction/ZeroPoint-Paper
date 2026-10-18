@@ -142,8 +142,10 @@ beforeAll(async () => {
     request.on('end', () => {
       const parsed = JSON.parse(body) as {
         messages: Array<{ content: string }>
+        max_tokens?: number
       }
       const prompt = parsed.messages[1].content
+      const maxTokens = parsed.max_tokens ?? 0
       const items = mockItems(prompt)
       const payload = prompt.includes('重新命制一道')
         ? items[0]
@@ -169,11 +171,22 @@ beforeAll(async () => {
         // 模拟模型在 JSON 前写了解析说明，其中 LaTeX 花括号不应被当成 JSON 起点。
         content = `结果为 $\\frac{a+b+c}{|abc|}$ 的值为 3。\n${content}`
       }
+      let finishReason = 'stop'
+      if (prompt.includes('THINKING_PROSE') && maxTokens < 9000) {
+        // 模拟思考型模型把预算耗在散文上，输出被长度截断。
+        content = '我们需要输出合法JSON。需要设计题目。不能包含解释外内容。要严格JSON。需要原创'
+        finishReason = 'length'
+      }
+      if (prompt.includes('PROSE_TWICE') && !prompt.includes('第一个字符必须是 {')) {
+        // 前两次只给思考过程，第三次极简提示才输出 JSON。
+        content = '我们需要输出合法JSON。需要设计题目。需要原创、难度9，多步推理。'
+      }
       response.writeHead(200, { 'Content-Type': 'application/json' })
       response.end(
         JSON.stringify({
           choices: [
             {
+              finish_reason: finishReason,
               message: {
                 content
               }
@@ -436,6 +449,75 @@ describe('generation pipeline', () => {
     expect(questions.every((question) => question.stem.length > 2)).toBe(true)
     expect(questions.every((question) => question.answer.length > 0)).toBe(true)
     expect(messages.some((message) => message.includes('改为逐题生成'))).toBe(true)
+  })
+
+  it('retries with a bigger budget when the model spends tokens on thinking prose', async () => {
+    const config: ExamConfig = {
+      grade: 7,
+      edition: 'renjiao',
+      chapterIds: ['renjiao-7-a-1'],
+      pageCount: 2,
+      difficulty: 6,
+      typeCount: 1,
+      types: ['single_choice'],
+      manualCounts: {},
+      totalScore: 100,
+      durationMinutes: 90,
+      title: '思考截断测试',
+      exportFormats: ['pdf'],
+      notes: 'THINKING_PROSE',
+      avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test',
+      name: 'Mock',
+      baseUrl,
+      model: 'mock-model',
+      authMode: 'user-key',
+      timeoutMs: 30_000,
+      concurrency: 1,
+      reasoningEffort: 'medium',
+      answerReview: false
+    }
+    const paper = await generatePaper(config, { profile, apiKey: '' })
+    const questions = paper.sections.flatMap((section) => section.questions)
+    expect(questions.length).toBeGreaterThan(0)
+    expect(questions.every((question) => !question.stem.includes('我们需要输出'))).toBe(true)
+  })
+
+  it('keeps retrying per question when the model first answers with prose', async () => {
+    const config: ExamConfig = {
+      grade: 7,
+      edition: 'renjiao',
+      chapterIds: ['renjiao-7-a-1'],
+      pageCount: 2,
+      difficulty: 6,
+      typeCount: 1,
+      types: ['single_choice'],
+      manualCounts: {},
+      totalScore: 100,
+      durationMinutes: 90,
+      title: '散文重试测试',
+      exportFormats: ['pdf'],
+      notes: 'ALWAYS_NUMERIC PROSE_TWICE',
+      avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test',
+      name: 'Mock',
+      baseUrl,
+      model: 'mock-model',
+      authMode: 'user-key',
+      timeoutMs: 30_000,
+      concurrency: 1,
+      reasoningEffort: 'medium',
+      answerReview: false
+    }
+    const paper = await generatePaper(config, { profile, apiKey: '' })
+    const questions = paper.sections.flatMap((section) => section.questions)
+    expect(questions.length).toBeGreaterThan(0)
+    expect(questions.every((question) => question.stem.length > 2)).toBe(true)
+    expect(questions.every((question) => question.answer.length > 0)).toBe(true)
   })
 })
 

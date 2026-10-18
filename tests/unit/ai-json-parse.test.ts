@@ -32,6 +32,11 @@ describe('AI JSON parsing', () => {
     expect(() => parseJsonResponse('抱歉，我无法完成。')).toThrow(/开头/)
   })
 
+  it('names thinking prose as a thinking-only response', () => {
+    const raw = '我们需要输出合法JSON。需要设计题目。不能包含解释外内容。'
+    expect(() => parseJsonResponse(raw)).toThrow(/只输出了思考过程/)
+  })
+
   it('repairs single-backslash LaTeX commands inside strings', () => {
     const raw = String.raw`{"items":[{"stem":"在 $\triangle ABC$ 中，$x \le 1$，$\frac{1}{2}$。"}]}`
     expect(parseJsonResponse(raw)).toEqual({

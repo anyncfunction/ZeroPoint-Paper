@@ -52,7 +52,7 @@ export interface GenerationCheckpoint {
   onSection?: (index: number, section: PaperSection) => void
 }
 
-function maxTokensFor(type: QuestionType, count: number): number {
+function maxTokensFor(type: QuestionType, count: number, difficulty = 6): number {
   const perQuestion: Record<QuestionType, number> = {
     single_choice: 850,
     fill_blank: 750,
@@ -61,7 +61,17 @@ function maxTokensFor(type: QuestionType, count: number): number {
     proof: 1250,
     application: 1150
   }
-  return Math.min(16_000, Math.max(1_400, count * perQuestion[type] + 600))
+  // 高难题解析更长，思考型模型还会先花一批 token 推理，预算必须留足。
+  const effort = difficulty >= 9 ? 1.6 : difficulty >= 8 ? 1.3 : 1
+  // 单题请求没有整组的规模效应，思考型模型更容易把预算耗在推理上。
+  const base = Math.max(
+    count * perQuestion[type] + 600,
+    count === 1 ? 3_500 : 2_000
+  )
+  return Math.min(
+    16_000,
+    Math.max(3_000, Math.round(base * effort))
+  )
 }
 
 export function estimateCost(usage: TokenUsage, profile: ProviderProfile): number {
@@ -106,41 +116,58 @@ interface RepairRequest<T> {
   prompt: string
   maxTokens: number
   /** 首次结果不合法时，用错误信息构造第二次请求。 */
-  repair: (rawText: string, error: string) => { prompt: string; maxTokens: number }
+  repair: (
+    rawText: string,
+    error: string,
+    context: { truncated: boolean; retryIndex: number }
+  ) => { prompt: string; maxTokens: number }
   parse: (value: unknown) => T
   failureMessage: (error: string) => string
+  /** 总尝试次数（含首次请求），默认 2。 */
+  attempts?: number
   /** 某些结构性错误重试同一提示词没有意义，直接交给调用方降级处理。 */
   skipRepairFor?: (error: Error) => boolean
 }
 
 // 三段请求共用同一套「请求 → 解析 → 带错误重试一次」流程，差异只由调用方注入。
 async function requestWithRepair<T>(spec: RepairRequest<T>): Promise<T> {
-  const request = (prompt: string, maxTokens: number): Promise<string> =>
-    completeJson(
+  throwIfAborted(spec.options.signal)
+  let finishReason = ''
+  const send = async (prompt: string, maxTokens: number): Promise<string> => {
+    finishReason = ''
+    return completeJson(
       {
         profile: spec.profile,
         apiKey: spec.options.apiKey,
         signal: spec.options.signal,
         maxTokens,
-        onUsage: spec.options.onUsage
+        onUsage: spec.options.onUsage,
+        onFinishReason: (reason) => {
+          finishReason = reason
+        }
       },
       spec.system,
       prompt
     )
+  }
 
-  throwIfAborted(spec.options.signal)
-  let rawText = await request(spec.prompt, spec.maxTokens)
+  let rawText = await send(spec.prompt, spec.maxTokens)
   let lastError = new Error('AI 未返回可用的题目内容')
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const attempts = Math.max(1, spec.attempts ?? 2)
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       return spec.parse(parseJsonResponse(rawText))
     } catch (error) {
       lastError = error as Error
-      if (attempt === 0) {
-        if (spec.skipRepairFor?.(lastError)) break
+      if (attempt < attempts - 1) {
+        const truncated = finishReason === 'length'
+        if (!truncated && spec.skipRepairFor?.(lastError)) break
         throwIfAborted(spec.options.signal)
-        const next = spec.repair(rawText, lastError.message)
-        rawText = await request(next.prompt, next.maxTokens)
+        const next = spec.repair(rawText, lastError.message, {
+          truncated,
+          retryIndex: attempt
+        })
+        rawText = await send(next.prompt, next.maxTokens)
       }
     }
   }
@@ -154,7 +181,11 @@ async function requestSection(
   options: GenerateOptions
 ): Promise<unknown> {
   const chapters = getSelectedChapters(config.chapterIds)
-  const maxTokens = maxTokensFor(section.type, section.questionCount)
+  const maxTokens = maxTokensFor(
+    section.type,
+    section.questionCount,
+    config.difficulty
+  )
   try {
     const parsed = await requestWithRepair({
       options,
@@ -162,9 +193,11 @@ async function requestSection(
       system: systemPrompt(options.profile.reasoningEffort),
       prompt: sectionPrompt(config, section, section.difficulties),
       maxTokens,
-      repair: (rawText, error) => ({
+      repair: (rawText, error, { truncated }) => ({
         prompt: repairPrompt(config, section, rawText, error),
-        maxTokens: Math.min(16_000, Math.round(maxTokens * 1.5))
+        maxTokens: truncated
+          ? 16_000
+          : Math.min(16_000, Math.round(maxTokens * 1.5))
       }),
       parse: (value) => rawItems(value, section.questionCount, section.type, chapters),
       failureMessage: (error) => `${section.title}生成失败：${error}`,
@@ -200,15 +233,22 @@ async function generateSectionPerQuestion(
       if (!chapterId) throw new Error(`${section.title}缺少可用章节`)
       const difficulty = section.difficulties[index] ?? config.difficulty
       const basePrompt = singleQuestionPrompt(config, section, index + 1, difficulty, chapterId)
-      const maxTokens = maxTokensFor(section.type, 1)
+      const maxTokens = maxTokensFor(section.type, 1, difficulty)
       const items = await requestWithRepair({
         options,
         profile: options.profile,
         system: systemPrompt(options.profile.reasoningEffort),
         prompt: basePrompt,
         maxTokens,
-        repair: (rawText, error) => ({
-          prompt: `${basePrompt}
+        attempts: 3,
+        repair: (rawText, error, { truncated, retryIndex }) => ({
+          prompt:
+            retryIndex >= 1
+              ? `只输出一个 JSON 对象，不要任何文字、分析或思考过程。
+格式必须严格如下，items 中恰好 1 个完整题目对象：
+{"items":[{"slot":${index + 1},"chapterId":"${chapterId}","knowledgePoint":"知识点","difficulty":${difficulty},"stem":"题干","options":${section.type === 'single_choice' ? '[{"key":"A","text":"..."},{"key":"B","text":"..."},{"key":"C","text":"..."},{"key":"D","text":"..."}]' : '[]'},"answer":"${section.type === 'single_choice' ? 'A' : '答案'}","explanation":"解析"}]}
+第一个字符必须是 {。`
+              : `${basePrompt}
 
 上一次输出未通过校验：
 ${error}
@@ -216,8 +256,11 @@ ${error}
 上一次输出：
 ${rawText.slice(0, 4_000)}
 
+${truncated ? '上一次输出因长度限制被截断，请直接给出精简的 JSON 结果，不要写任何思考过程。' : ''}
 请重新输出完整 JSON，items 中恰好 1 个题目对象。`,
-          maxTokens: Math.min(8_000, Math.round(maxTokens * 1.5))
+          maxTokens: truncated
+            ? 16_000
+            : Math.max(6_000, Math.min(8_000, Math.round(maxTokens * 1.5)))
         }),
         parse: (value) => rawItems(value, 1, section.type, chapters, { allowAnySlot: true }),
         failureMessage: (error) => `${section.title}第 ${index + 1} 题生成失败：${error}`
@@ -290,7 +333,7 @@ async function hardenSectionItems(
     system: systemPrompt(reviewer.reasoningEffort),
     prompt,
     maxTokens: Math.min(8000, 900 + section.questionCount * 420),
-    repair: (rawText, error) => ({
+    repair: (rawText, error, { truncated }) => ({
       prompt: `${prompt}
 
 上一次拔高结果未通过校验：
@@ -299,8 +342,10 @@ ${error}
 上一次输出：
 ${rawText.slice(0, 12_000)}
 
-请重新输出完整 JSON。`,
-      maxTokens: Math.min(8000, 900 + section.questionCount * 420)
+${truncated ? '上一次输出被长度限制截断，请精简内容后直接输出完整 JSON。\n' : ''}请重新输出完整 JSON。`,
+      maxTokens: truncated
+        ? 16_000
+        : Math.min(8000, 900 + section.questionCount * 420)
     }),
     parse: (value) =>
       mergePatchItems(originalItems, value, section.questionCount, section.type, chapters),
@@ -328,7 +373,7 @@ async function verifySectionItems(
     system: systemPrompt(reviewer.reasoningEffort),
     prompt,
     maxTokens,
-    repair: (rawText, error) => ({
+    repair: (rawText, error, { truncated }) => ({
       prompt: `${prompt}
 
 上一次复核结果未通过校验：
@@ -337,8 +382,8 @@ ${error}
 上一次输出：
 ${rawText.slice(0, 12_000)}
 
-请重新输出完整 JSON。`,
-      maxTokens
+${truncated ? '上一次输出被长度限制截断，请精简后直接输出完整 JSON。\n' : ''}请重新输出完整 JSON。`,
+      maxTokens: truncated ? 16_000 : maxTokens
     }),
     parse: (value) =>
       mergePatchItems(items, value, section.questionCount, section.type, chapters),

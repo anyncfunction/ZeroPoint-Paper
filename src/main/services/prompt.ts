@@ -125,7 +125,13 @@ JSON 字符串中的 LaTeX 反斜杠必须双写：triangle、frac、sqrt、leq 
 - items 必须是数组，数组里每个元素都必须是完整的题目对象 { }。
 - 禁止把 items 写成题号数组，例如 {"items":[1,2,3,4]} 是严重错误。
 - 禁止把 items 写成字符串、数字、数组或 null。
-- 每道题必须同时包含 slot、chapterId、knowledgePoint、difficulty、stem、options、answer、explanation 八个字段。`
+- 每道题必须同时包含 slot、chapterId、knowledgePoint、difficulty、stem、options、answer、explanation 八个字段。
+
+【禁止输出思考过程】
+- 回复的第一个字符必须是 {，最后一个字符必须是 }。
+- 禁止输出任何分析、计划、自检、草稿或说明文字。
+- 禁止出现“我们需要”“需要设计”“先分析”“思考”“要求是”等字样。
+- 命题与检查在内部完成，对外只给最终 JSON。`
 }
 
 export function sectionPrompt(
@@ -203,7 +209,8 @@ ${figureGuideFor(chapters, section.type)}
 - 每题都遵循对应槽位的章节与难度。
 - 不同题目的情境、数据和设问不得重复。
 - 答案页是独立文件，题干中不要写“答案见后”。
-- 只输出 JSON。`
+- 只输出 JSON，第一个字符必须是 {，最后一个字符必须是 }。
+- 不要写任何思考过程、计划或自检说明。`
 }
 
 export function repairPrompt(
@@ -276,7 +283,8 @@ ${figureGuideFor(chapter ? [chapter] : [], section.type)}
 }
 
 要求：
-- 只输出上述 JSON，不要解释。
+- 只输出上述 JSON，不要解释，也不要输出任何思考过程。
+- 回复的第一个字符必须是 {，最后一个字符必须是 }。
 - items 里必须是题目对象，禁止写成 {"items":[${slot}]}。
 ${isChoice ? '- 必须有且仅有 A、B、C、D 四个选项，答案填其中一个字母。' : '- options 必须为空数组。'}
 - 答案和解析必须与题干条件一致。`

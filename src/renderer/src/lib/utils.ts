@@ -156,6 +156,14 @@ export function explainGenerationFailure(error: unknown): GenerationFailure {
       raw
     }
   }
+  if (/思考过程|思考截断/.test(raw)) {
+    return {
+      title: '模型没有输出题目',
+      message:
+        '当前模型把推理过程当成了正文，没有输出题目 JSON。可以重试一次；若反复出现，请换用非思考型模型，或把思考强度调低。',
+      raw
+    }
+  }
   if (/JSON|题目数量|题目结构|题目对象|题号|校验|公式|重复题|字段|应为/i.test(raw)) {
     return {
       title: '生成内容未通过校验',

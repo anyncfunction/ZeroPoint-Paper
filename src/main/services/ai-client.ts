@@ -11,10 +11,12 @@ export interface AiClientOptions {
   signal?: AbortSignal
   maxTokens?: number
   onUsage?: (usage: TokenUsage) => void
+  onFinishReason?: (reason: string) => void
 }
 
 interface ChatCompletionResponse {
   choices?: Array<{
+    finish_reason?: string | null
     message?: {
       content?: string | Array<{ type?: string; text?: string }>
       reasoning_content?: string
@@ -139,8 +141,23 @@ async function requestCompletion(
     requests: 1
   })
   const message = data.choices?.[0]?.message
-  const content = contentText(message?.content) || message?.reasoning_content || ''
-  if (!content.trim()) throw new Error('AI 接口未返回内容')
+  const answer = contentText(message?.content)
+  const reasoning = message?.reasoning_content ?? ''
+  // 思考型模型常把正文留空、只给 reasoning_content。它不一定是题目 JSON，
+  // 直接当答案会得到一段散文，所以只在里面确实含 JSON 时才采用。
+  const content = answer.trim()
+    ? answer
+    : reasoning.includes('{')
+      ? reasoning
+      : ''
+  options.onFinishReason?.(data.choices?.[0]?.finish_reason ?? '')
+  if (!content.trim()) {
+    throw new Error(
+      reasoning.trim()
+        ? '模型只返回了思考过程，没有输出题目 JSON'
+        : 'AI 接口未返回内容'
+    )
+  }
   return content
 }
 
@@ -180,6 +197,9 @@ export function parseJsonResponse(raw: string): unknown {
   const starts = jsonStartIndices(text)
   if (starts.length === 0) {
     const head = text.replace(/\s+/g, ' ').slice(0, 120)
+    if (THINKING_PROSE.test(text)) {
+      throw new Error(`模型只输出了思考过程，没有输出题目 JSON（开头：${head}）`)
+    }
     throw new Error(`AI 返回内容不是 JSON${head ? `（开头：${head}）` : ''}`)
   }
 
@@ -195,6 +215,10 @@ export function parseJsonResponse(raw: string): unknown {
   const candidate = text.slice(starts[0])
   throw new Error(`AI 返回的 JSON 格式不合法（${jsonErrorDetail(candidate)}）`)
 }
+
+// 模型把「我们需要输出合法 JSON」这类自言自语当正文时，要给出可操作的提示。
+const THINKING_PROSE =
+  /我们需要|需要设计|需要输出|先分析|先拆解|要严格JSON|不能包含解释|让我|我认为应该|思考过程/
 
 // 题干里的 LaTeX（如 \frac{a+b+c}）也带花括号，不能把第一个 { 直接当成 JSON 起点。
 // 只接受「{ 后面紧跟引号或 }」和「[ 后面紧跟 { 或引号」这类真正的 JSON 结构。
