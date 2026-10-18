@@ -37,6 +37,7 @@ import { chapterDisplayName } from '../../../shared/curriculum'
 import {
   difficultyLabel,
   errorMessage,
+  estimateGenerationUsage,
   explainGenerationFailure,
   gradeLabel,
   providerConfigured,
@@ -273,6 +274,10 @@ export function WizardScreen({
     .map((chapter) => chapter.title)
     .join('、')
   const providerReady = providerConfigured(settings?.profile)
+  const usageEstimate = useMemo(
+    () => estimateGenerationUsage(plan, draft.difficulty, settings?.profile),
+    [plan, draft.difficulty, settings?.profile]
+  )
 
   const update = <K extends keyof ExamConfig>(key: K, value: ExamConfig[K]): void => {
     onChange({ ...draft, [key]: value })
@@ -947,6 +952,20 @@ export function WizardScreen({
                   导出 {draft.exportFormats.map((format) => format.toUpperCase()).join(' + ')}
                   <br />答案与解析将另存文件
                 </p>
+                {usageEstimate && (
+                  <p className="summary-usage">
+                    预计 {usageEstimate.requests} 次调用 · 约{' '}
+                    {Math.round(
+                      (usageEstimate.promptTokens + usageEstimate.completionTokens) / 1000
+                    )}
+                    k tokens
+                    {usageEstimate.costLow !== null && usageEstimate.costHigh !== null
+                      ? ` · 约 ¥${usageEstimate.costLow.toFixed(2)}–${usageEstimate.costHigh.toFixed(
+                          2
+                        )}`
+                      : ' · 未设置单价，仅估算 token'}
+                  </p>
+                )}
                 {appInfo && <p className="summary-path">输出到文档 / 零点出卷 / 导出</p>}
               </aside>
             </div>

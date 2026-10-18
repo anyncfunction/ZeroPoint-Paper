@@ -35,6 +35,15 @@ async function main() {
     await page.waitForTimeout(300)
     await page.screenshot({ path: path.join(artifacts, 'step-4.png'), fullPage: true })
 
+    const usageEstimate = await page
+      .locator('.summary-usage')
+      .textContent()
+      .catch(() => '')
+    if (!usageEstimate || !usageEstimate.includes('tokens')) {
+      throw new Error(`缺少生成前用量估算：${usageEstimate}`)
+    }
+    console.log('USAGE_ESTIMATE', usageEstimate.trim())
+
     await page.getByRole('button', { name: /AI 设置/ }).first().click()
     await page.waitForTimeout(200)
     await page.screenshot({ path: path.join(artifacts, 'settings.png'), fullPage: true })

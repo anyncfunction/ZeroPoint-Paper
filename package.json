@@ -1,6 +1,6 @@
 {
   "name": "lingdian-chujuan",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "private": true,
   "description": "ZeroPoint Paper (零点出卷) - AI exam paper generator for junior-high math",
   "main": "./out/main/index.js",

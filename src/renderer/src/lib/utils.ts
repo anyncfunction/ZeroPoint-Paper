@@ -1,9 +1,49 @@
 import {
   EDITION_LABELS,
   GRADE_LABELS,
+  type ExamPlan,
+  type ProviderProfile,
   type QuestionType
 } from '../../../shared/schemas'
 import { DIFFICULTY_LABELS, QUESTION_TYPE_OPTIONS } from '../../../shared/constants'
+
+export interface UsageEstimate {
+  requests: number
+  promptTokens: number
+  completionTokens: number
+  costLow: number | null
+  costHigh: number | null
+}
+
+export function estimateGenerationUsage(
+  plan: ExamPlan | null | undefined,
+  difficulty: number,
+  profile?: ProviderProfile | null
+): UsageEstimate | null {
+  if (!plan || plan.sections.length === 0) return null
+  const sections = plan.sections.length
+  const questions = Math.max(plan.totalQuestions, sections)
+  const promptTokens = Math.round(1200 * sections + 220 * questions)
+  const perQuestion = difficulty >= 8 ? 480 : 420
+  let completionTokens = Math.round(questions * perQuestion)
+  const reviewEnabled = profile?.answerReview ?? false
+  if (reviewEnabled) completionTokens = Math.round(completionTokens * 1.35)
+  const requests = sections + (reviewEnabled ? 1 : 0)
+
+  const inputPrice = profile?.inputPricePerM ?? 0
+  const outputPrice = profile?.outputPricePerM ?? 0
+  let costLow: number | null = null
+  let costHigh: number | null = null
+  if (inputPrice > 0 || outputPrice > 0) {
+    const base =
+      (promptTokens / 1_000_000) * inputPrice +
+      (completionTokens / 1_000_000) * outputPrice
+    costLow = base * 0.75
+    costHigh = base * 1.35
+  }
+
+  return { requests, promptTokens, completionTokens, costLow, costHigh }
+}
 
 export function gradeLabel(grade: 7 | 8 | 9): string {
   return GRADE_LABELS[grade]
