@@ -96,52 +96,73 @@ function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException('已取消生成', 'AbortError')
 }
 
+interface RepairRequest<T> {
+  options: GenerateOptions
+  /** 实际发起请求的模型配置；复核/拔高时是 reviewer。 */
+  profile: ProviderProfile
+  system: string
+  prompt: string
+  maxTokens: number
+  /** 首次结果不合法时，用错误信息构造第二次请求。 */
+  repair: (rawText: string, error: string) => { prompt: string; maxTokens: number }
+  parse: (value: unknown) => T
+  failureMessage: (error: string) => string
+}
+
+// 三段请求共用同一套「请求 → 解析 → 带错误重试一次」流程，差异只由调用方注入。
+async function requestWithRepair<T>(spec: RepairRequest<T>): Promise<T> {
+  const request = (prompt: string, maxTokens: number): Promise<string> =>
+    completeJson(
+      {
+        profile: spec.profile,
+        apiKey: spec.options.apiKey,
+        signal: spec.options.signal,
+        maxTokens,
+        onUsage: spec.options.onUsage
+      },
+      spec.system,
+      prompt
+    )
+
+  throwIfAborted(spec.options.signal)
+  let rawText = await request(spec.prompt, spec.maxTokens)
+  let lastError = ''
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return spec.parse(parseJsonResponse(rawText))
+    } catch (error) {
+      lastError = (error as Error).message
+      if (attempt === 0) {
+        throwIfAborted(spec.options.signal)
+        const next = spec.repair(rawText, lastError)
+        rawText = await request(next.prompt, next.maxTokens)
+      }
+    }
+  }
+  throw new Error(spec.failureMessage(lastError))
+}
+
 async function requestSection(
   config: ExamConfig,
   section: ReturnType<typeof createExamPlan>['sections'][number],
   options: GenerateOptions
 ): Promise<unknown> {
-  throwIfAborted(options.signal)
-  let rawText = await completeJson(
-    {
-      profile: options.profile,
-      apiKey: options.apiKey,
-      signal: options.signal,
-      maxTokens: maxTokensFor(section.type, section.questionCount),
-      onUsage: options.onUsage
-    },
-    systemPrompt(options.profile.reasoningEffort),
-    sectionPrompt(config, section, section.difficulties)
-  )
-
   const chapters = getSelectedChapters(config.chapterIds)
-  let lastError = ''
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const parsed = parseJsonResponse(rawText)
-      return { parsed: rawItems(parsed, section.questionCount, section.type, chapters) }
-    } catch (error) {
-      lastError = (error as Error).message
-      if (attempt === 0) {
-        throwIfAborted(options.signal)
-        rawText = await completeJson(
-          {
-            profile: options.profile,
-            apiKey: options.apiKey,
-            signal: options.signal,
-            maxTokens: Math.min(
-              16_000,
-              Math.round(maxTokensFor(section.type, section.questionCount) * 1.5)
-            ),
-            onUsage: options.onUsage
-          },
-          systemPrompt(options.profile.reasoningEffort),
-          repairPrompt(config, section, rawText, lastError)
-        )
-      }
-    }
-  }
-  throw new Error(`${section.title}生成失败：${lastError}`)
+  const maxTokens = maxTokensFor(section.type, section.questionCount)
+  const parsed = await requestWithRepair({
+    options,
+    profile: options.profile,
+    system: systemPrompt(options.profile.reasoningEffort),
+    prompt: sectionPrompt(config, section, section.difficulties),
+    maxTokens,
+    repair: (rawText, error) => ({
+      prompt: repairPrompt(config, section, rawText, error),
+      maxTokens: Math.min(16_000, Math.round(maxTokens * 1.5))
+    }),
+    parse: (value) => rawItems(value, section.questionCount, section.type, chapters),
+    failureMessage: (error) => `${section.title}生成失败：${error}`
+  })
+  return { parsed }
 }
 
 function mergePatchItems(
@@ -199,55 +220,29 @@ async function hardenSectionItems(
     model: options.profile.reviewModel?.trim() || options.profile.model,
     timeoutMs: Math.max(options.profile.timeoutMs, 180_000)
   }
-  let rawText = await completeJson(
-    {
-      profile: reviewer,
-      apiKey: options.apiKey,
-      signal: options.signal,
-      maxTokens: Math.min(8000, 900 + section.questionCount * 420),
-      onUsage: options.onUsage
-    },
-    systemPrompt(reviewer.reasoningEffort),
-    hardenSectionPrompt(config, section, originalItems)
-  )
-
-  let lastError = ''
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const parsed = parseJsonResponse(rawText)
-      return mergePatchItems(
-        originalItems,
-        parsed,
-        section.questionCount,
-        section.type,
-        chapters
-      )
-    } catch (error) {
-      lastError = (error as Error).message
-      if (attempt === 0) {
-        rawText = await completeJson(
-          {
-            profile: reviewer,
-            apiKey: options.apiKey,
-            signal: options.signal,
-            maxTokens: Math.min(8000, 900 + section.questionCount * 420),
-            onUsage: options.onUsage
-          },
-          systemPrompt(reviewer.reasoningEffort),
-          `${hardenSectionPrompt(config, section, originalItems)}
+  const prompt = hardenSectionPrompt(config, section, originalItems)
+  return requestWithRepair({
+    options,
+    profile: reviewer,
+    system: systemPrompt(reviewer.reasoningEffort),
+    prompt,
+    maxTokens: Math.min(8000, 900 + section.questionCount * 420),
+    repair: (rawText, error) => ({
+      prompt: `${prompt}
 
 上一次拔高结果未通过校验：
-${lastError}
+${error}
 
 上一次输出：
 ${rawText.slice(0, 12_000)}
 
-请重新输出完整 JSON。`
-        )
-      }
-    }
-  }
-  throw new Error(`${section.title}难度拔高失败：${lastError}`)
+请重新输出完整 JSON。`,
+      maxTokens: Math.min(8000, 900 + section.questionCount * 420)
+    }),
+    parse: (value) =>
+      mergePatchItems(originalItems, value, section.questionCount, section.type, chapters),
+    failureMessage: (error) => `${section.title}难度拔高失败：${error}`
+  })
 }
 
 async function verifySectionItems(
@@ -262,55 +257,30 @@ async function verifySectionItems(
     model: options.profile.reviewModel?.trim() || options.profile.model,
     timeoutMs: Math.max(options.profile.timeoutMs, 180_000)
   }
-  let rawText = await completeJson(
-    {
-      profile: reviewer,
-      apiKey: options.apiKey,
-      signal: options.signal,
-      maxTokens: Math.min(8000, 700 + section.questionCount * 320),
-      onUsage: options.onUsage
-    },
-    systemPrompt(reviewer.reasoningEffort),
-    verifySectionPrompt(config, section, items)
-  )
-
-  let lastError = ''
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const parsed = parseJsonResponse(rawText)
-      return mergePatchItems(
-        items,
-        parsed,
-        section.questionCount,
-        section.type,
-        chapters
-      )
-    } catch (error) {
-      lastError = (error as Error).message
-      if (attempt === 0) {
-        rawText = await completeJson(
-          {
-            profile: reviewer,
-            apiKey: options.apiKey,
-            signal: options.signal,
-            maxTokens: Math.min(8000, 700 + section.questionCount * 320),
-            onUsage: options.onUsage
-          },
-          systemPrompt(reviewer.reasoningEffort),
-          `${verifySectionPrompt(config, section, items)}
+  const prompt = verifySectionPrompt(config, section, items)
+  const maxTokens = Math.min(8000, 700 + section.questionCount * 320)
+  return requestWithRepair({
+    options,
+    profile: reviewer,
+    system: systemPrompt(reviewer.reasoningEffort),
+    prompt,
+    maxTokens,
+    repair: (rawText, error) => ({
+      prompt: `${prompt}
 
 上一次复核结果未通过校验：
-${lastError}
+${error}
 
 上一次输出：
 ${rawText.slice(0, 12_000)}
 
-请重新输出完整 JSON。`
-        )
-      }
-    }
-  }
-  throw new Error(`${section.title}答案复核失败：${lastError}`)
+请重新输出完整 JSON。`,
+      maxTokens
+    }),
+    parse: (value) =>
+      mergePatchItems(items, value, section.questionCount, section.type, chapters),
+    failureMessage: (error) => `${section.title}答案复核失败：${error}`
+  })
 }
 
 async function repairDuplicateQuestions(
