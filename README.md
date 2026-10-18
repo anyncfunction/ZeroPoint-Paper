@@ -56,7 +56,7 @@ node tests/e2e/packaged-smoke.cjs
 npm run package:win
 ```
 
-安装包输出到 `release/0.1.9/零点出卷-0.1.9-安装版.exe`，每个版本独立目录，旧版本安装包不会被覆盖。
+安装包输出到 `release/<版本号>/零点出卷-<版本号>-安装版.exe`，每个版本独立目录，旧版本安装包不会被覆盖。
 
 ## 使用前配置
 

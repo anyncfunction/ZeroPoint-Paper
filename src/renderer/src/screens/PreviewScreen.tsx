@@ -287,6 +287,15 @@ export function PreviewScreen({ paper, onPaperChanged, onBack, onNew }: PreviewP
     if (success) setNotice(`已调整为 ${pages.length} 页`)
   }
 
+  const bumpPageCount = async (): Promise<void> => {
+    const target = Math.min(16, paper.config.pageCount + 1)
+    if (target === paper.config.pageCount) return
+    const next = structuredClone(paper)
+    next.config.pageCount = target
+    const success = await commitPaper(next)
+    if (success) setNotice(`已调整为 ${target} 页`)
+  }
+
   const moveCurrent = async (direction: -1 | 1): Promise<void> => {
     if (!editing) return
     const next = moveQuestion(
@@ -402,6 +411,15 @@ export function PreviewScreen({ paper, onPaperChanged, onBack, onNew }: PreviewP
                 当前内容完整排版需要 {pages.length} 页，设置为 {paper.config.pageCount} 页。
               </span>
               <button onClick={fitPageCount}>调整为 {pages.length} 页</button>
+            </div>
+          )}
+          {!hasPageOverflow && spaceScale < 0.6 && (
+            <div className="page-overflow-warning">
+              <AlertTriangle size={15} />
+              <span>
+                作答留白已压缩到 {Math.round(spaceScale * 100)}%，学生书写空间偏紧。
+              </span>
+              <button onClick={() => bumpPageCount()}>增加 1 页</button>
             </div>
           )}
           <div className="paper-preview-list" style={{ zoom }}>

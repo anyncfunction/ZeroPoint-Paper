@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { buildPaperHtml } from '../../src/main/export/html'
+import {
+  MIN_ANSWER_SPACE_SCALE,
+  buildFlowItems,
+  packWithSpaceFit
+} from '../../src/shared/pagination'
 import type { Paper } from '../../src/shared/schemas'
 
 function paper(): Paper {
@@ -79,5 +84,16 @@ describe('paper html pagination', () => {
   it('renders one section per page block', async () => {
     const html = await buildPaperHtml(paper())
     expect(html.match(/<section class="page">/g)).toHaveLength(2)
+  })
+})
+
+describe('answer space fitting', () => {
+  it('never shrinks answer space below the floor', () => {
+    const flowItems = buildFlowItems(paper())
+    const fixedHeights = flowItems.map(() => 900)
+    const spaceHeights = flowItems.map(() => 100)
+    const fitted = packWithSpaceFit(flowItems, fixedHeights, spaceHeights, 1)
+    expect(fitted.overflow).toBe(true)
+    expect(fitted.spaceScale).toBe(MIN_ANSWER_SPACE_SCALE)
   })
 })

@@ -268,13 +268,18 @@ export interface SpaceFitResult {
   overflow: boolean
 }
 
+export const MIN_ANSWER_SPACE_SCALE = 0.3
+
 export function packWithSpaceFit(
   flowItems: FlowItem[],
   fixedHeights: number[],
   spaceHeights: number[],
-  targetPages: number
+  targetPages: number,
+  minSpaceScale = MIN_ANSWER_SPACE_SCALE
 ): SpaceFitResult {
-  const scales = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0]
+  const scales = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4]
+    .filter((scale) => scale > minSpaceScale)
+    .concat(minSpaceScale)
   let fallback: SpaceFitResult | null = null
   for (const spaceScale of scales) {
     const heights = fixedHeights.map(

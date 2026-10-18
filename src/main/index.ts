@@ -404,7 +404,12 @@ function registerIpc(): void {
       await storage.savePaper(paper)
       const layout = await measurePaperPages(paper)
       const measuredPages = layout.pages
-      if (layout.overflow || measuredPages.length > paper.config.pageCount) {
+      if (layout.overflow) {
+        throw new Error(
+          `作答空间不足：当前题量在 ${paper.config.pageCount} 页内无法保留最小书写空间，请增加页数或减少题量。`
+        )
+      }
+      if (measuredPages.length > paper.config.pageCount) {
         throw new Error(
           `实际排版需要 ${measuredPages.length} 页，超过设定的 ${paper.config.pageCount} 页。请先在预览中调整页数或减少题量。`
         )
