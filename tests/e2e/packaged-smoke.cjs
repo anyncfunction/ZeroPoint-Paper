@@ -7,11 +7,13 @@ async function main() {
     path.resolve(__dirname, '../../release/win-unpacked/零点出卷.exe')
   const electronApp = await electron.launch({
     executablePath,
-    args: [],
+    args: ['--no-sandbox', '--disable-gpu'],
     env: {
       ...process.env,
       LINGDIAN_E2E_MULTI: '1',
-      LINGDIAN_E2E_HIDDEN: '1'
+      LINGDIAN_E2E_HIDDEN: '1',
+      LINGDIAN_DATA_DIR: path.join(__dirname, '.tmp-packaged-data'),
+      LINGDIAN_DOCUMENTS_DIR: path.join(__dirname, '.tmp-packaged-output')
     }
   })
   try {

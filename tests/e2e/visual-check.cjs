@@ -208,7 +208,7 @@ async function main() {
   await fs.rm(testOutput, { recursive: true, force: true })
   const { server, baseUrl } = await startMockServer()
   const electronApp = await electron.launch({
-    args: ['.'],
+    args: ['.', '--no-sandbox', '--disable-gpu'],
     cwd: root,
     env: {
       ...process.env,

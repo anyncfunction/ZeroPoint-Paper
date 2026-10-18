@@ -6,8 +6,14 @@ async function main() {
   const artifacts = path.join(__dirname, 'artifacts')
   await fs.mkdir(artifacts, { recursive: true })
   const electronApp = await electron.launch({
-    args: ['.'],
-    cwd: path.resolve(__dirname, '../..')
+    args: ['.', '--no-sandbox', '--disable-gpu'],
+    cwd: path.resolve(__dirname, '../..'),
+    env: {
+      ...process.env,
+      LINGDIAN_E2E_MULTI: '1',
+      LINGDIAN_DATA_DIR: path.join(__dirname, '.tmp-ui-flow-data'),
+      LINGDIAN_DOCUMENTS_DIR: path.join(__dirname, '.tmp-ui-flow-output')
+    }
   })
   try {
     const page = await electronApp.firstWindow()

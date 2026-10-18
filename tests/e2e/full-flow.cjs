@@ -129,7 +129,7 @@ async function main() {
   await fs.rm(testOutput, { recursive: true, force: true })
   const { server, baseUrl } = await startMockServer()
   const electronApp = await electron.launch({
-    args: ['.'],
+    args: ['.', '--no-sandbox', '--disable-gpu'],
     cwd: path.resolve(__dirname, '../..'),
     env: {
       ...process.env,
@@ -213,7 +213,13 @@ async function main() {
     await page.getByRole('button', { name: /关闭编辑/ }).click()
 
     await page.getByRole('button', { name: /导出到文档/ }).click()
-    await page.locator('.export-result').waitFor({ timeout: 30000 })
+    await Promise.race([
+      page.locator('.export-result').waitFor({ timeout: 60000 }),
+      page.locator('.side-error').waitFor({ timeout: 60000 })
+    ])
+    if (await page.locator('.side-error').count()) {
+      throw new Error(`导出失败：${await page.locator('.side-error').textContent()}`)
+    }
     const exportText = await page.locator('.export-result').textContent()
     console.log('EXPORT_RESULT', exportText)
 

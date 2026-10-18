@@ -236,7 +236,7 @@ async function main() {
   await fs.rm(testData, { recursive: true, force: true })
   await fs.rm(testOutput, { recursive: true, force: true })
   const electronApp = await electron.launch({
-    args: ['.'],
+    args: ['.', '--no-sandbox', '--disable-gpu'],
     cwd: path.resolve(__dirname, '../..'),
     env: {
       ...process.env,
