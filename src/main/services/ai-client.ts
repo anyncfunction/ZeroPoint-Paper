@@ -247,6 +247,7 @@ const LATEX_COMMAND =
 function sanitizeJsonText(value: string): string {
   let output = ''
   let inString = false
+  let inMath = false
   for (let index = 0; index < value.length; index += 1) {
     const char = value[index]
     if (!inString) {
@@ -267,6 +268,7 @@ function sanitizeJsonText(value: string): string {
     if (char === '"') {
       output += char
       inString = false
+      inMath = false
       continue
     }
     if (char === '\\') {
@@ -294,7 +296,8 @@ function sanitizeJsonText(value: string): string {
       const rest = value.slice(index + 1)
       if (JSON_ESCAPES.has(next)) {
         // \n \t \f 等既是合法 JSON 转义，也可能是 \neq \triangle \frac 的开头。
-        output += LATEX_COMMAND.test(rest) ? `\\\\${next}` : char + next
+        // 只有数学环境里的命令才需要补反斜杠，普通换行仍按 JSON 转义处理。
+        output += inMath && LATEX_COMMAND.test(rest) ? `\\\\${next}` : char + next
       } else {
         output += `\\\\${next}`
       }
@@ -313,6 +316,7 @@ function sanitizeJsonText(value: string): string {
       output += '\\t'
       continue
     }
+    if (char === '$') inMath = !inMath
     if (char.charCodeAt(0) < 0x20) {
       output += ' '
       continue

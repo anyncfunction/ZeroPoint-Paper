@@ -45,6 +45,18 @@ describe('AI JSON parsing', () => {
     })
   })
 
+  it('keeps newline escapes even when the next word looks like a latex command', () => {
+    expect(parseJsonResponse('{"stem":"第一行\\nto be continued"}')).toEqual({
+      stem: '第一行\nto be continued'
+    })
+  })
+
+  it('still repairs latex escapes inside math when the command starts with n or t', () => {
+    expect(parseJsonResponse(String.raw`{"stem":"若 $x \neq 1$ 且 $\triangle ABC$ 为等边三角形"}`)).toEqual({
+      stem: '若 $x \\neq 1$ 且 $\\triangle ABC$ 为等边三角形'
+    })
+  })
+
   it('escapes raw newlines inside strings', () => {
     expect(parseJsonResponse('{"stem":"第一行\n第二行"}')).toEqual({
       stem: '第一行\n第二行'
