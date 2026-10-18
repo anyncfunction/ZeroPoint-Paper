@@ -129,7 +129,10 @@ async function requestSection(
             profile: options.profile,
             apiKey: options.apiKey,
             signal: options.signal,
-            maxTokens: maxTokensFor(section.type, section.questionCount),
+            maxTokens: Math.min(
+              16_000,
+              Math.round(maxTokensFor(section.type, section.questionCount) * 1.5)
+            ),
             onUsage: options.onUsage
           },
           systemPrompt(options.profile.reasoningEffort),

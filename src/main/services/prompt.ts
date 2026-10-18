@@ -141,6 +141,14 @@ export function sectionPrompt(
       return `${index + 1}. 章节ID ${chapterId}，难度 ${difficulty}/10`
     })
     .join('\n')
+  const capstoneLevel = config.difficulty >= 9 ? 10 : 9
+  const capstoneSlots = difficulties.filter((difficulty) => difficulty === capstoneLevel).length
+  const capstoneGuide =
+    config.difficulty >= 8
+      ? capstoneSlots > 0
+        ? `【最高难度题分配】本节有 ${capstoneSlots} 道难度 ${capstoneLevel} 的题，按${capstoneLevel === 10 ? '中考最后两道压轴题' : '多步拔高综合题'}标准命制；其余题目按槽位难度执行。`
+        : `【最高难度题分配】本节不含难度 ${capstoneLevel} 的题，按槽位标注的难度执行，不得擅自抬高难度。`
+      : ''
 
   return `请生成一份${GRADE_LABELS[config.grade]}数学试卷中的“${QUESTION_TYPE_LABELS[section.type]}”部分。
 教材版本：${EDITION_LABELS[config.edition]} 2024 新版
@@ -153,7 +161,7 @@ ${slots}
 整体难度：${config.difficulty}/10，${difficultyGuide(config.difficulty)}
 计算量：${config.calculationLoad}/5；思维量：${config.thinkingLoad}/5。
 ${difficultyContract(config.difficulty)}
-【压轴题分配】本卷共 ${config.capstoneCount} 道压轴题名额，已在槽位中标注难度 10。只有标为难度 10 的题按压轴题标准；标为难度 9 的题按高难综合题标准。
+${capstoneGuide}
 教师备注：${config.notes || '无'}
 
 ${figureGuideFor(chapters, section.type)}

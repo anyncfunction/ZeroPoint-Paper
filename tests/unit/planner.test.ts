@@ -111,5 +111,44 @@ describe('exam planner', () => {
     expect(prompt).toContain('分类讨论')
     expect(prompt).toContain('不能直接代入')
   })
+
+  it('does not claim capstone slots when difficulty is below 8', () => {
+    const easyConfig = config({ difficulty: 6 })
+    const plan = createExamPlan(easyConfig)
+    const prompt = sectionPrompt(easyConfig, plan.sections[0], plan.sections[0].difficulties)
+    expect(prompt).not.toContain('压轴题分配')
+    expect(prompt).not.toContain('标注难度 10')
+  })
+
+  it('describes the actual number of capstone slots in each section', () => {
+    const hardConfig = config({ difficulty: 10, capstoneCount: 2 })
+    const plan = createExamPlan(hardConfig)
+    const counts = plan.sections.map(
+      (section) => section.difficulties.filter((value) => value === 10).length
+    )
+    expect(counts.reduce((sum, value) => sum + value, 0)).toBe(2)
+    plan.sections.forEach((section, index) => {
+      const prompt = sectionPrompt(hardConfig, section, section.difficulties)
+      expect(prompt).toContain(
+        counts[index] > 0
+          ? `本节有 ${counts[index]} 道难度 10 的题`
+          : '本节不含难度 10 的题'
+      )
+    })
+  })
+
+  it('describes level-8 capstones as difficulty 9 rather than 10', () => {
+    const level8 = config({ difficulty: 8, capstoneCount: 2 })
+    const plan = createExamPlan(level8)
+    const topCount = plan.sections
+      .flatMap((section) => section.difficulties)
+      .filter((value) => value === 9).length
+    expect(topCount).toBe(2)
+    const prompts = plan.sections.map((section) =>
+      sectionPrompt(level8, section, section.difficulties)
+    )
+    expect(prompts.join('\n')).toContain('难度 9 的题')
+    expect(prompts.join('\n')).not.toContain('难度 10 的题')
+  })
 })
 
