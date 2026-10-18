@@ -109,6 +109,8 @@ interface RepairRequest<T> {
   repair: (rawText: string, error: string) => { prompt: string; maxTokens: number }
   parse: (value: unknown) => T
   failureMessage: (error: string) => string
+  /** 某些结构性错误重试同一提示词没有意义，直接交给调用方降级处理。 */
+  skipRepairFor?: (error: Error) => boolean
 }
 
 // 三段请求共用同一套「请求 → 解析 → 带错误重试一次」流程，差异只由调用方注入。
@@ -135,6 +137,7 @@ async function requestWithRepair<T>(spec: RepairRequest<T>): Promise<T> {
     } catch (error) {
       lastError = error as Error
       if (attempt === 0) {
+        if (spec.skipRepairFor?.(lastError)) break
         throwIfAborted(spec.options.signal)
         const next = spec.repair(rawText, lastError.message)
         rawText = await request(next.prompt, next.maxTokens)
@@ -164,7 +167,8 @@ async function requestSection(
         maxTokens: Math.min(16_000, Math.round(maxTokens * 1.5))
       }),
       parse: (value) => rawItems(value, section.questionCount, section.type, chapters),
-      failureMessage: (error) => `${section.title}生成失败：${error}`
+      failureMessage: (error) => `${section.title}生成失败：${error}`,
+      skipRepairFor: isItemPayloadError
     })
     return { parsed }
   } catch (error) {
