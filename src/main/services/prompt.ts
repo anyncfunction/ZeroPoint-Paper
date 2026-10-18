@@ -117,7 +117,8 @@ export function systemPrompt(
 难度必须体现在条件关系、推理链和知识综合上，不能只靠增大数字、堆叠计算或文字变长。
 当目标难度为 9–10 时，必须按中考数学最后几道难题和最后两道压轴题的标准命题，不得引入高中知识或偏门竞赛技巧。
 ${thinkingGuide}
-每道题必须有完整答案解析，解析要与题干条件一致。只输出合法 JSON。`
+每道题必须有完整答案解析，解析要与题干条件一致。只输出合法 JSON。
+JSON 字符串中的 LaTeX 反斜杠必须双写：triangle、frac、sqrt、leq 等命令前要用两个反斜杠，不能只写一个；字符串内不要出现裸换行。`
 }
 
 export function sectionPrompt(

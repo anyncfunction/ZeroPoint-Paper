@@ -184,12 +184,157 @@ export function parseJsonResponse(raw: string): unknown {
   }
 
   const candidate = text.slice(start)
-  const balanced = extractBalancedJson(candidate) ?? candidate
-  const parsed = tryParseJson(balanced) ?? tryParseJson(closeTruncatedJson(balanced))
+  const parsed =
+    parseCandidate(candidate) ??
+    parseCandidate(candidate.replace(/[\u201c\u201d]/g, '"'))
   if (parsed !== undefined) {
     return Array.isArray(parsed) ? { items: parsed } : parsed
   }
-  throw new Error('AI 返回的 JSON 格式不合法')
+  throw new Error(`AI 返回的 JSON 格式不合法（${jsonErrorDetail(candidate)}）`)
+}
+
+function parseCandidate(value: string): unknown {
+  const sanitized = sanitizeJsonText(value)
+  const balanced = extractBalancedJson(sanitized) ?? sanitized
+  const repairedQuotes = repairUnescapedQuotes(balanced)
+  return (
+    tryParseJson(balanced) ??
+    tryParseJson(closeTruncatedJson(balanced)) ??
+    tryParseJson(repairedQuotes) ??
+    tryParseJson(closeTruncatedJson(repairedQuotes))
+  )
+}
+
+// 模型有时在字符串里直接写英文引号（如 "AB" 是直径），按后续字符判断它是否真的闭合。
+function repairUnescapedQuotes(value: string): string {
+  let output = ''
+  let inString = false
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]
+    if (!inString) {
+      output += char
+      if (char === '"') inString = true
+      continue
+    }
+    if (char === '\\') {
+      output += char + (value[index + 1] ?? '')
+      index += 1
+      continue
+    }
+    if (char !== '"') {
+      output += char
+      continue
+    }
+    let lookahead = index + 1
+    while (lookahead < value.length && /\s/.test(value[lookahead])) lookahead += 1
+    const next = value[lookahead]
+    if (next === undefined || next === ',' || next === '}' || next === ']' || next === ':') {
+      output += char
+      inString = false
+    } else {
+      output += '\\"'
+    }
+  }
+  return output
+}
+
+const JSON_ESCAPES = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't'])
+
+// 模型常把 LaTeX 命令原样写进 JSON，如 \triangle、\frac、\le，导致转义非法或变成控制字符。
+const LATEX_COMMAND =
+  /^(?:triangle|triangleq|times|tfrac|text|tan|theta|therefore|to|top|frac|forall|left|leq|le|lambda|ldots|lim|ln|log|neq|nabla|ni|not|nu|right|rangle|rho|rm|rightarrow|simeq|sim|sqrt|subset|sum|underbrace|underline|uparrow|beta|because|begin|bar|binom|boxed|bottom|bigcup|bigcap|mathbb|mathbf|mathcal|mathrm|mid|mp|mu|parallel|perp|phi|pi|pm|prec|propto|psi|qquad|quad|rceil|rfloor|rbrace|rvert|neg|ncong|nexists|notin|nsubseteq|nleq|ngeq|nmid|vdash|vdots|vec|vee|vert|wedge|widehat|widetilde|xi|zeta|alpha|angle|approx|arctan|ast|asymp)(?![a-zA-Z])/
+
+function sanitizeJsonText(value: string): string {
+  let output = ''
+  let inString = false
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]
+    if (!inString) {
+      if (char === '/' && value[index + 1] === '/') {
+        while (index < value.length && value[index] !== '\n') index += 1
+        output += '\n'
+        continue
+      }
+      if (char === '/' && value[index + 1] === '*') {
+        const end = value.indexOf('*/', index + 2)
+        index = end < 0 ? value.length : end + 1
+        continue
+      }
+      output += char
+      if (char === '"') inString = true
+      continue
+    }
+    if (char === '"') {
+      output += char
+      inString = false
+      continue
+    }
+    if (char === '\\') {
+      const next = value[index + 1]
+      if (next === undefined) {
+        output += '\\\\'
+        continue
+      }
+      if (next === '"' || next === '\\' || next === '/') {
+        output += char + next
+        index += 1
+        continue
+      }
+      if (next === 'u') {
+        const hex = value.slice(index + 2, index + 6)
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+          output += `\\u${hex}`
+          index += 5
+        } else {
+          output += '\\\\u'
+          index += 1
+        }
+        continue
+      }
+      const rest = value.slice(index + 1)
+      if (JSON_ESCAPES.has(next)) {
+        // \n \t \f 等既是合法 JSON 转义，也可能是 \neq \triangle \frac 的开头。
+        output += LATEX_COMMAND.test(rest) ? `\\\\${next}` : char + next
+      } else {
+        output += `\\\\${next}`
+      }
+      index += 1
+      continue
+    }
+    if (char === '\n') {
+      output += '\\n'
+      continue
+    }
+    if (char === '\r') {
+      output += '\\r'
+      continue
+    }
+    if (char === '\t') {
+      output += '\\t'
+      continue
+    }
+    if (char.charCodeAt(0) < 0x20) {
+      output += ' '
+      continue
+    }
+    output += char
+  }
+  return output
+}
+
+function jsonErrorDetail(value: string): string {
+  try {
+    JSON.parse(value)
+    return '内容可解析'
+  } catch (error) {
+    const message = (error as Error).message
+    const match = message.match(/position (\d+)/i)
+    if (!match) return message
+    const position = Number(match[1])
+    const from = Math.max(0, position - 24)
+    const snippet = value.slice(from, position + 24).replace(/\s+/g, ' ')
+    return `位置 ${position} 附近：${snippet}`
+  }
 }
 
 function extractBalancedJson(value: string): string | null {

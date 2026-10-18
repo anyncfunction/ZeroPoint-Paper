@@ -147,13 +147,18 @@ beforeAll(async () => {
           : prompt.includes('独立数学解题与审校员')
             ? { corrections: items.slice(0, 1) }
             : { items }
+      let content = JSON.stringify(payload)
+      if (prompt.includes('BROKEN_LATEX')) {
+        // 模拟部分模型把 LaTeX 反斜杠只写一层，导致 JSON 转义非法。
+        content = content.replace(/\\\\/g, '\\')
+      }
       response.writeHead(200, { 'Content-Type': 'application/json' })
       response.end(
         JSON.stringify({
           choices: [
             {
               message: {
-                content: JSON.stringify(payload)
+                content
               }
             }
           ]
@@ -269,6 +274,42 @@ describe('generation pipeline', () => {
     )
     expect(difficulties.every((difficulty) => difficulty >= 9)).toBe(true)
     expect(difficulties.filter((difficulty) => difficulty === 10).length).toBe(2)
+  })
+
+  it('recovers when the model emits single-backslash LaTeX in json', async () => {
+    const config: ExamConfig = {
+      grade: 7,
+      edition: 'renjiao',
+      chapterIds: ['renjiao-7-a-1', 'renjiao-7-a-2'],
+      pageCount: 2,
+      difficulty: 6,
+      typeCount: 2,
+      types: ['single_choice', 'solution'],
+      manualCounts: {},
+      totalScore: 100,
+      durationMinutes: 90,
+      title: '转义修复测试',
+      exportFormats: ['pdf'],
+      notes: 'BROKEN_LATEX',
+      avoidCrossPaperDuplicates: false
+    }
+    const profile: ProviderProfile = {
+      id: 'test',
+      name: 'Mock',
+      baseUrl,
+      model: 'mock-model',
+      authMode: 'user-key',
+      timeoutMs: 30_000,
+      concurrency: 2,
+      reasoningEffort: 'medium',
+      answerReview: false
+    }
+    const paper = await generatePaper(config, { profile, apiKey: '' })
+    const stems = paper.sections.flatMap((section) =>
+      section.questions.map((question) => question.stem)
+    )
+    expect(stems.some((stem) => stem.includes('\\triangle'))).toBe(true)
+    expect(stems.every((stem) => !stem.includes('\t'))).toBe(true)
   })
 })
 

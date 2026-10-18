@@ -31,4 +31,40 @@ describe('AI JSON parsing', () => {
   it('reports the beginning of non-JSON content', () => {
     expect(() => parseJsonResponse('抱歉，我无法完成。')).toThrow(/开头/)
   })
+
+  it('repairs single-backslash LaTeX commands inside strings', () => {
+    const raw = String.raw`{"items":[{"stem":"在 $\triangle ABC$ 中，$x \le 1$，$\frac{1}{2}$。"}]}`
+    expect(parseJsonResponse(raw)).toEqual({
+      items: [{ stem: '在 $\\triangle ABC$ 中，$x \\le 1$，$\\frac{1}{2}$。' }]
+    })
+  })
+
+  it('keeps real newline escapes when they are not LaTeX', () => {
+    expect(parseJsonResponse('{"stem":"第一行\\n第二行"}')).toEqual({
+      stem: '第一行\n第二行'
+    })
+  })
+
+  it('escapes raw newlines inside strings', () => {
+    expect(parseJsonResponse('{"stem":"第一行\n第二行"}')).toEqual({
+      stem: '第一行\n第二行'
+    })
+  })
+
+  it('accepts full-width quotes around keys', () => {
+    expect(parseJsonResponse('{“items”:[{“stem”:“a”}]}')).toEqual({
+      items: [{ stem: 'a' }]
+    })
+  })
+
+  it('includes a location hint for unrecoverable json', () => {
+    expect(() => parseJsonResponse('{"items":[oops]}')).toThrow(/位置|格式不合法/)
+  })
+
+  it('repairs unescaped ascii quotes inside a string', () => {
+    const raw = '{"items":[{"stem":"如图，"AB" 是直径，求 "CD" 的长。"}]}'
+    expect(parseJsonResponse(raw)).toEqual({
+      items: [{ stem: '如图，"AB" 是直径，求 "CD" 的长。' }]
+    })
+  })
 })
