@@ -8,10 +8,11 @@ const outputDir = resolve(root, 'release', pkg.version)
 
 console.log(`Packaging version ${pkg.version} into ${outputDir}`)
 
+const builderCli = resolve(root, 'node_modules/electron-builder/out/cli/cli.js')
 const result = spawnSync(
-  process.platform === 'win32' ? 'npx.cmd' : 'npx',
-  ['electron-builder', '--win', 'nsis', `--config.directories.output=${outputDir}`],
-  { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' }
+  process.execPath,
+  [builderCli, '--win', 'nsis', `--config.directories.output=${outputDir}`],
+  { cwd: root, stdio: 'inherit' }
 )
 
 if (result.status !== 0) {
